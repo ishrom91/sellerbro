@@ -4,12 +4,15 @@ import tempfile
 import os
 from typing import Dict, Any
 from aiogram import Bot, Dispatcher, F
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import Message, FSInputFile
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
 from config import BOT_TOKEN
+from database import get_user, create_user, get_usage_stats, increment_single_usage, increment_batch_usage, check_limits
+from ai_service import generate_description
+from batch_processor import process_excel_file
+
 # Verify that BOT_TOKEN is not None to satisfy type checker
 assert BOT_TOKEN is not None, "BOT_TOKEN must be set in environment"
 
@@ -17,15 +20,7 @@ assert BOT_TOKEN is not None, "BOT_TOKEN must be set in environment"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Proxy setup
-proxy_url = os.getenv("PROXY_URL")
-if proxy_url:
-    session = AiohttpSession(proxy=proxy_url)
-    bot = Bot(token=BOT_TOKEN, session=session)  # type: ignore
-    logger.info(f"Using proxy: {proxy_url}")
-else:
-    bot = Bot(token=BOT_TOKEN)  # type: ignore
-    logger.info("No proxy configured, using direct connection")
+bot = Bot(token=BOT_TOKEN)
 
 dp = Dispatcher()
 
