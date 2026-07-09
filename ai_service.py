@@ -25,8 +25,7 @@ async def generate_description(product_name: str) -> str:
                 model="Qwen/Qwen2.5-7B-Instruct",
                 max_tokens=500,
                 temperature=0.7,
-                top_p=0.9,
-                repetition_penalty=1.1
+                top_p=0.9
             )
             
             if response and response.choices and len(response.choices) > 0:
