@@ -36,7 +36,7 @@ def create_user(user_id: int, username: str) -> None:
     """Create a new user in the database"""
     try:
         user_data = {
-            'user_id': user_id,
+            'id': user_id,
             'username': username,
             'single_count': 0,
             'batch_count': 0,
