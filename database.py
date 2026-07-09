@@ -20,7 +20,7 @@ def get_user(user_id: int) -> Optional[Dict]:
             supabase
             .table('users')
             .select('*')
-            .eq('user_id', user_id)
+            .eq('id', user_id)
             .execute()
         )
         
@@ -91,7 +91,7 @@ def increment_single_usage(user_id: int) -> None:
         user = get_user(user_id)
         if user:
             new_count = user['single_count'] + 1
-            supabase.table('users').update({'single_count': new_count}).eq('user_id', user_id).execute()
+            supabase.table('users').update({'single_count': new_count}).eq('id', user_id).execute()
             logger.info(f"Incremented single usage for user {user_id}, new count: {new_count}")
     except Exception as e:
         logger.error(f"Error incrementing single usage for user {user_id}: {str(e)}")
@@ -103,7 +103,7 @@ def increment_batch_usage(user_id: int) -> None:
         user = get_user(user_id)
         if user:
             new_count = user['batch_count'] + 1
-            supabase.table('users').update({'batch_count': new_count}).eq('user_id', user_id).execute()
+            supabase.table('users').update({'batch_count': new_count}).eq('id', user_id).execute()
             logger.info(f"Incremented batch usage for user {user_id}, new count: {new_count}")
     except Exception as e:
         logger.error(f"Error incrementing batch usage for user {user_id}: {str(e)}")
@@ -138,7 +138,7 @@ def reset_usage(user_id: int) -> None:
             'single_count': 0,
             'batch_count': 0,
             'last_reset': datetime.utcnow().isoformat()
-        }).eq('user_id', user_id).execute()
+        }).eq('id', user_id).execute()
         logger.info(f"Reset usage for user {user_id}")
     except Exception as e:
         logger.error(f"Error resetting usage for user {user_id}: {str(e)}")
