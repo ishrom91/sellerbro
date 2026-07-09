@@ -10,7 +10,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import BOT_TOKEN
 from database import get_user, create_user, get_usage_stats, increment_single_usage, increment_batch_usage, check_limits, increment_image_generation_usage, increment_batch_with_photos_usage, check_limits_with_photos
-from ai_service import generate_description, generate_product_image, process_product_image
+from ai_service import generate_description, generate_product_image, process_product_image, generate_description_from_photo, analyze_product_photo
 from batch_processor import process_excel_file, process_excel_with_photos
 
 # Verify that BOT_TOKEN is not None to satisfy type checker
@@ -24,6 +24,8 @@ bot = Bot(token=BOT_TOKEN)
 
 dp = Dispatcher()
 
+# Dictionary to store user states for photo processing
+user_states = {}
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -53,6 +55,13 @@ async def cmd_start(message: Message):
             f"   • Батч-обработка файлов: {remaining_batch}/1 осталось\n"
             f"   • Генерация фото-карт: {remaining_images}/5 осталось\n"
             f"   • Обработка каталогов с фото: {remaining_batch_with_photos}/1 осталось\n\n"
+            f"📸 НОВАЯ ФУНКЦИЯ: Отправь фото товара — я проанализирую его и создам описание только по реальным характеристикам! Никаких выдумок.\n\n"
+            f"Как это работает:\n"
+            f"• Пришли фото товара\n"
+            f"• Я проанализирую его и опишу только то, что вижу\n"
+            f"• Если хочешь — добавь размер, бренд, цену (то, что не видно на фото)\n"
+            f"• Получишь реалистичное SEO-описание!\n\n"
+            f"💡 Для текстовых запросов (без фото) я создам примерное описание.\n\n"
             f"💡 Как пользоваться:\n"
             f"   • Отправьте название товара - я создам SEO-описание\n"
             f"   • Пришлите фото товара - я создам профессиональную фото-карточку\n"
@@ -69,9 +78,66 @@ async def cmd_start(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 
+@dp.message(Command("skip"))
+async def cmd_skip(message: Message):
+    """Handle /skip command when user doesn't want to add additional information"""
+    user_id = message.from_user.id
+    
+    # Check if user is in photo processing state
+    if user_id in user_states and user_states[user_id]['state'] == 'awaiting_additional_info':
+        # Retrieve stored photo path
+        photo_path = user_states[user_id]['photo_path']
+        
+        try:
+            # Generate description based on photo only (no additional info)
+            generating_msg = await message.answer("⏳ Генерирую SEO-описание на основе фото...")
+            
+            # Generate description from photo without additional notes
+            description = await generate_description_from_photo(photo_path, "")
+            
+            # Send the generated description
+            await message.answer(f"✅ SEO-описание готово!\n\n{description}")
+            
+            # Clean up user state and temporary file
+            del user_states[user_id]
+            if os.path.exists(photo_path):
+                try:
+                    os.remove(photo_path)
+                except Exception as e:
+                    logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
+            
+            # Increment usage counter
+            increment_single_usage(user_id)
+            
+            # Get updated stats
+            new_stats = get_usage_stats(user_id)
+            remaining = max(0, 3 - new_stats['single_count'])
+            if remaining > 0:
+                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
+            else:
+                await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
+                
+            logger.info(f"Generated photo-based description for user {user_id}")
+            
+        except Exception as gen_error:
+            logger.error(f"Error generating photo-based description for user {user_id}: {str(gen_error)}")
+            await message.answer("❌ Ошибка при генерации описания. Пожалуйста, попробуйте снова.")
+            
+            # Clean up in case of error
+            if user_id in user_states:
+                del user_states[user_id]
+            if os.path.exists(photo_path):
+                try:
+                    os.remove(photo_path)
+                except Exception as e:
+                    logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
+    else:
+        await message.answer("Команда /skip доступна только при обработке фото. Отправьте фото товара для начала.")
+
+
 @dp.message(F.photo)
 async def handle_photo(message: Message):
-    """Handle photo messages (generate product image card)"""
+    """Handle photo messages (analyze photo and generate SEO description)"""
     try:
         user_id = message.from_user.id
         username = message.from_user.username or str(user_id)
@@ -81,12 +147,11 @@ async def handle_photo(message: Message):
         if not user:
             create_user(user_id, username)
         
-        # Check image generation limits
-        stats = get_usage_stats(user_id)
-        if stats['image_generation_count'] >= 5:  # 5 images per month limit
+        # Check usage limits
+        if not check_limits(user_id):
             await message.answer(
-                "❌ Вы исчерпали лимит бесплатной генерации фото-карт.\n"
-                "Доступно: 5 фото-карт в месяц.\n"
+                "❌ Вы исчерпали лимит бесплатных генераций.\n"
+                "Доступно: 3 одиночные генерации и 1 батч-обработка файла в месяц.\n"
                 "Для продолжения работы необходимо обновить статус."
             )
             return
@@ -94,67 +159,88 @@ async def handle_photo(message: Message):
         # Download the photo
         file_info = await bot.get_file(message.photo[-1].file_id)  # Get the highest resolution photo
         file_extension = file_info.file_path.split('.')[-1] if '.' in file_info.file_path else 'jpg'
-        base_image_path = f"temp_base_image_{user_id}_{message.message_id}.{file_extension}"
+        photo_path = f"temp_photo_{user_id}_{message.message_id}.{file_extension}"
         
         try:
-            await bot.download_file(file_info.file_path, base_image_path)
-            logger.info(f"Downloaded base image for user {user_id}: {base_image_path}")
+            await bot.download_file(file_info.file_path, photo_path)
+            logger.info(f"Downloaded photo for user {user_id}: {photo_path}")
             
-            # Send "generating" message
-            generating_msg = await message.answer("🎨 Генерирую профессиональную фото-карточку...")
+            # Store user state to wait for additional information
+            user_states[user_id] = {
+                'state': 'awaiting_additional_info',
+                'photo_path': photo_path
+            }
             
-            try:
-                # Generate product image using the uploaded photo as base
-                product_name = f"product from photo by user {username}"  # Placeholder name
-                generated_image_path = await generate_product_image(product_name, base_image_path)
-                
-                # Increment image generation usage counter
-                increment_image_generation_usage(user_id)
-                
-                # Send the generated image
-                result_image = FSInputFile(generated_image_path)
-                await message.answer_photo(
-                    photo=result_image,
-                    caption="Ваша профессиональная фото-карточка готова! 🖼️"
-                )
-                
-                # Edit the generating message
-                await bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=generating_msg.message_id,
-                    text="✅ Фото-карточка успешно создана!"
-                )
-                
-                # Get updated stats
-                new_stats = get_usage_stats(user_id)
-                remaining_images = max(0, 5 - new_stats['image_generation_count'])
-                if remaining_images > 0:
-                    await message.answer(f"📊 Осталось фото-карт: {remaining_images}/5")
-                else:
-                    await message.answer("📊 Вы исчерпали лимит фото-карт на этот месяц.")
-                    
-                logger.info(f"Generated product image for user {user_id}")
-                
-            except Exception as gen_error:
-                logger.error(f"Error generating product image for user {user_id}: {str(gen_error)}")
-                await bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=generating_msg.message_id,
-                    text="❌ Ошибка при генерации фото-карточки. Пожалуйста, попробуйте снова."
-                )
-                
-        finally:
-            # Clean up temporary files
-            if os.path.exists(base_image_path):
-                try:
-                    os.remove(base_image_path)
-                    logger.debug(f"Removed temp base image: {base_image_path}")
-                except Exception as cleanup_error:
-                    logger.warning(f"Could not remove temp base image {base_image_path}: {str(cleanup_error)}")
-                    
+            # Ask user if they want to add additional information
+            await message.answer(
+                "Добавить информацию, которой нет на фото? (размер, бренд, цена) "
+                "Отправь текстом или нажми /skip"
+            )
+            
+        except Exception as download_error:
+            logger.error(f"Error downloading photo for user {user_id}: {str(download_error)}")
+            await message.answer("❌ Ошибка загрузки фото. Пожалуйста, попробуйте снова.")
+            
     except Exception as e:
         logger.error(f"Error handling photo from user {message.from_user.id}: {str(e)}")
         await message.answer("Произошла ошибка при обработке фото. Пожалуйста, попробуйте снова.")
+
+
+@dp.message(F.text & F.func(lambda msg: msg.from_user.id in user_states and user_states[msg.from_user.id]['state'] == 'awaiting_additional_info'))
+async def handle_additional_info(message: Message):
+    """Handle additional information provided by user for photo-based description"""
+    user_id = message.from_user.id
+    
+    # Retrieve stored photo path
+    photo_path = user_states[user_id]['photo_path']
+    
+    try:
+        # Get the additional information from user
+        additional_info = message.text
+        
+        # Generate description based on photo and additional info
+        generating_msg = await message.answer("⏳ Генерирую SEO-описание на основе фото и дополнительной информации...")
+        
+        # Generate description from photo with additional notes
+        description = await generate_description_from_photo(photo_path, additional_info)
+        
+        # Send the generated description
+        await message.answer(f"✅ SEO-описание готово!\n\n{description}")
+        
+        # Clean up user state and temporary file
+        del user_states[user_id]
+        
+        if os.path.exists(photo_path):
+            try:
+                os.remove(photo_path)
+            except Exception as e:
+                logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
+        
+        # Increment usage counter
+        increment_single_usage(user_id)
+        
+        # Get updated stats
+        new_stats = get_usage_stats(user_id)
+        remaining = max(0, 3 - new_stats['single_count'])
+        if remaining > 0:
+            await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
+        else:
+            await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
+            
+        logger.info(f"Generated photo-based description with additional info for user {user_id}")
+        
+    except Exception as gen_error:
+        logger.error(f"Error generating photo-based description for user {user_id}: {str(gen_error)}")
+        await message.answer("❌ Ошибка при генерации описания. Пожалуйста, попробуйте снова.")
+        
+        # Clean up in case of error
+        if user_id in user_states:
+            del user_states[user_id]
+        if os.path.exists(photo_path):
+            try:
+                os.remove(photo_path)
+            except Exception as e:
+                logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
 
 
 @dp.message(Command("card"))
@@ -330,6 +416,11 @@ async def handle_text_message(message: Message):
                 "Доступно: 3 одиночные генерации и 1 батч-обработка файла в месяц.\n"
                 "Для продолжения работы необходимо обновить статус."
             )
+            return
+        
+        # Check if user is in photo processing state
+        if user_id in user_states:
+            # This is handled by the separate handler for additional info
             return
         
         # Send "thinking" message
