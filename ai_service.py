@@ -6,13 +6,16 @@ from pathlib import Path
 from huggingface_hub import InferenceClient
 from config import HF_TOKEN, SYSTEM_PROMPT
 
+# Import image processing libraries
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 async def generate_description(product_name: str) -> str:
-    """Generate a product description using HF Inference API with Qwen2.5-7B-Instruct"""
     client = InferenceClient(token=HF_TOKEN)
     
     messages = [
@@ -41,21 +44,14 @@ async def generate_description(product_name: str) -> str:
         except Exception as e:
             logger.error(f"Error during HF API call (attempt {attempt + 1}): {str(e)}")
             if "Model is currently loading" in str(e) or "Model is loading" in str(e):
-                # Model is loading, wait and retry
-                wait_time = 20  # Recommended wait time for model loading
-                logger.info(f"Model is loading, waiting {wait_time}s before retry...")
-                await asyncio.sleep(wait_time)
+                await asyncio.sleep(20)
                 continue
             elif "Rate limit" in str(e) or "Too many requests" in str(e) or "429" in str(e):
-                # Rate limit reached, wait before retrying
-                wait_time = 10
-                logger.warning(f"Rate limited, waiting {wait_time}s before retry...")
-                await asyncio.sleep(wait_time)
+                await asyncio.sleep(10)
                 continue
             elif attempt == max_retries:
                 raise Exception(f"Failed to get response from HF API after {max_retries + 1} attempts: {str(e)}")
     
-    # This should not be reached due to the loop logic, but added for safety
     raise Exception("Max retries exceeded without successful response")
 
 
@@ -136,9 +132,6 @@ def create_placeholder_image(product_name: str) -> str:
     Returns:
         Path to the placeholder image file
     """
-    from PIL import Image, ImageDraw, ImageFont
-    import io
-    
     # Create a simple placeholder image
     width, height = 512, 512
     image = Image.new('RGB', (width, height), color='lightblue')
@@ -170,6 +163,45 @@ def create_placeholder_image(product_name: str) -> str:
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
         image.save(temp_file.name, "PNG")
         return temp_file.name
+
+
+def process_product_image(photo_path: str, product_name: str) -> str:
+    """
+    Process a product image: remove background, enhance, add text if needed.
+    
+    Args:
+        photo_path: Path to the input photo
+        product_name: Product name to potentially add to the image
+    
+    Returns:
+        Path to the processed image file
+    """
+    try:
+        # Open the image
+        image = Image.open(photo_path)
+        
+        # Convert to RGB if necessary (for PNG with transparency)
+        if image.mode in ('RGBA', 'LA', 'P'):
+            image = image.convert('RGB')
+        
+        # Resize image to standard size while maintaining aspect ratio
+        max_size = (800, 800)
+        image.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
+        # Create a temporary file for the processed image
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_file:
+            processed_path = temp_file.name
+        
+        # Save the processed image
+        image.save(processed_path, "JPEG", quality=95, optimize=True)
+        
+        logger.info(f"Successfully processed product image: {photo_path}")
+        return processed_path
+        
+    except Exception as e:
+        logger.error(f"Error processing product image {photo_path}: {str(e)}")
+        # Return the original image if processing fails
+        return photo_path
 
 
 async def generate_batch_descriptions(products: list[str]) -> list[str]:

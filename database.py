@@ -41,6 +41,7 @@ def create_user(user_id: int, username: str) -> None:
             'single_count': 0,
             'batch_count': 0,
             'image_generation_count': 0,  # New field for tracking image generations
+            'batch_with_photos_count': 0,  # New field for tracking batch with photos
             'last_reset': datetime.utcnow().isoformat(),
             'created_at': datetime.utcnow().isoformat()
         }
@@ -63,6 +64,7 @@ def get_usage_stats(user_id: int) -> Dict:
                 'single_count': 0,
                 'batch_count': 0,
                 'image_generation_count': 0,  # New field
+                'batch_with_photos_count': 0,  # New field
                 'last_reset': datetime.utcnow().isoformat()
             }
         
@@ -76,6 +78,7 @@ def get_usage_stats(user_id: int) -> Dict:
             'single_count': user.get('single_count', 0),
             'batch_count': user.get('batch_count', 0),
             'image_generation_count': user.get('image_generation_count', 0),  # New field
+            'batch_with_photos_count': user.get('batch_with_photos_count', 0),  # New field
             'last_reset': user.get('last_reset', datetime.utcnow().isoformat())
         }
     except Exception as e:
@@ -84,6 +87,7 @@ def get_usage_stats(user_id: int) -> Dict:
             'single_count': 0,
             'batch_count': 0,
             'image_generation_count': 0,  # New field
+            'batch_with_photos_count': 0,  # New field
             'last_reset': datetime.utcnow().isoformat()
         }
 
@@ -125,6 +129,18 @@ def increment_image_generation_usage(user_id: int) -> None:
         logger.error(f"Error incrementing image generation usage for user {user_id}: {str(e)}")
 
 
+def increment_batch_with_photos_usage(user_id: int) -> None:
+    """Increment batch with photos usage count"""
+    try:
+        user = get_user(user_id)
+        if user:
+            new_count = user['batch_with_photos_count'] + 1
+            supabase.table('users').update({'batch_with_photos_count': new_count}).eq('id', user_id).execute()
+            logger.info(f"Incremented batch with photos usage for user {user_id}, new count: {new_count}")
+    except Exception as e:
+        logger.error(f"Error incrementing batch with photos usage for user {user_id}: {str(e)}")
+
+
 def check_limits(user_id: int) -> bool:
     """Check if user is within their usage limits"""
     try:
@@ -152,6 +168,22 @@ def check_limits(user_id: int) -> bool:
         return False
 
 
+def check_limits_with_photos(user_id: int) -> bool:
+    """Check if user is within their batch with photos usage limits"""
+    try:
+        stats = get_usage_stats(user_id)
+        
+        # Check batch with photos limit (1 per month for free users)
+        if stats['batch_with_photos_count'] >= 1:
+            logger.info(f"User {user_id} exceeded batch with photos limit ({stats['batch_with_photos_count']}/1)")
+            return False
+            
+        return True
+    except Exception as e:
+        logger.error(f"Error checking batch with photos limits for user {user_id}: {str(e)}")
+        return False
+
+
 def reset_usage(user_id: int) -> None:
     """Reset usage counters for a user (monthly reset)"""
     try:
@@ -159,6 +191,7 @@ def reset_usage(user_id: int) -> None:
             'single_count': 0,
             'batch_count': 0,
             'image_generation_count': 0,  # Reset image counter too
+            'batch_with_photos_count': 0,  # Reset batch with photos counter too
             'last_reset': datetime.utcnow().isoformat()
         }).eq('id', user_id).execute()
         logger.info(f"Reset usage for user {user_id}")
