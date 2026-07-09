@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import httpx
+from huggingface_hub import InferenceClient
 from config import HF_TOKEN, SYSTEM_PROMPT
 
 # Configure logging
@@ -10,73 +10,51 @@ logger = logging.getLogger(__name__)
 
 async def generate_description(product_name: str) -> str:
     """Generate a product description using HF Inference API with Qwen2.5-7B-Instruct"""
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/json"
-    }
+    client = InferenceClient(token=HF_TOKEN)
     
-    payload = {
-        "inputs": f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{product_name} [/INST]",
-        "parameters": {
-            "max_new_tokens": 500,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "repetition_penalty": 1.1,
-            "return_full_text": False
-        }
-    }
+    prompt = f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{product_name} [/INST]"
     
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-7B-Instruct",
-                    headers=headers,
-                    json=payload
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    if isinstance(result, list) and len(result) > 0 and 'generated_text' in result[0]:
-                        description = result[0]['generated_text']
-                        # Clean up the response to remove any instruction artifacts
-                        if '[/INST]' in description:
-                            description = description.split('[/INST]')[-1].strip()
-                        logger.info(f"Successfully generated description for: {product_name[:50]}...")
-                        return description
-                    else:
-                        logger.warning(f"Unexpected response format: {result}")
-                        raise Exception(f"Unexpected response format from API: {result}")
-                
-                elif response.status_code == 503:
-                    # Model is loading, wait and retry
-                    wait_time = 20  # Recommended wait time for model loading
-                    logger.info(f"Model is loading, waiting {wait_time}s before retry...")
-                    await asyncio.sleep(wait_time)
-                    continue
-                
-                elif response.status_code == 429:
-                    # Rate limit reached, wait before retrying
-                    wait_time = 10
-                    logger.warning(f"Rate limited, waiting {wait_time}s before retry...")
-                    await asyncio.sleep(wait_time)
-                    continue
-                
-                else:
-                    error_detail = response.text
-                    logger.error(f"HF API error (attempt {attempt + 1}): {response.status_code} - {error_detail}")
-                    if attempt == max_retries:
-                        raise Exception(f"Failed to get response from HF API: {response.status_code} - {error_detail}")
+            # Call the model using the InferenceClient
+            response = client.text_generation(
+                prompt=prompt,
+                model="Qwen/Qwen2.5-7B-Instruct",
+                max_new_tokens=500,
+                temperature=0.7,
+                top_p=0.9,
+                repetition_penalty=1.1,
+                return_full_text=False
+            )
+            
+            if response:
+                description = response
+                # Clean up the response to remove any instruction artifacts
+                if '[/INST]' in description:
+                    description = description.split('[/INST]')[-1].strip()
+                logger.info(f"Successfully generated description for: {product_name[:50]}...")
+                return description
+            else:
+                logger.warning(f"Empty response received")
+                raise Exception(f"Empty response from API")
         
-        except httpx.TimeoutException:
-            logger.error(f"Request timeout (attempt {attempt + 1})")
-            if attempt == max_retries:
-                raise Exception("Request timed out after multiple attempts")
         except Exception as e:
             logger.error(f"Error during HF API call (attempt {attempt + 1}): {str(e)}")
-            if attempt == max_retries:
-                raise
+            if "Model is currently loading" in str(e) or "Model is loading" in str(e):
+                # Model is loading, wait and retry
+                wait_time = 20  # Recommended wait time for model loading
+                logger.info(f"Model is loading, waiting {wait_time}s before retry...")
+                await asyncio.sleep(wait_time)
+                continue
+            elif "Rate limit" in str(e) or "Too many requests" in str(e) or "429" in str(e):
+                # Rate limit reached, wait before retrying
+                wait_time = 10
+                logger.warning(f"Rate limited, waiting {wait_time}s before retry...")
+                await asyncio.sleep(wait_time)
+                continue
+            elif attempt == max_retries:
+                raise Exception(f"Failed to get response from HF API after {max_retries + 1} attempts: {str(e)}")
     
     # This should not be reached due to the loop logic, but added for safety
     raise Exception("Max retries exceeded without successful response")
