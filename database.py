@@ -40,6 +40,7 @@ def create_user(user_id: int, username: str) -> None:
             'username': username,
             'single_count': 0,
             'batch_count': 0,
+            'image_generation_count': 0,  # New field for tracking image generations
             'last_reset': datetime.utcnow().isoformat(),
             'created_at': datetime.utcnow().isoformat()
         }
@@ -61,6 +62,7 @@ def get_usage_stats(user_id: int) -> Dict:
             return {
                 'single_count': 0,
                 'batch_count': 0,
+                'image_generation_count': 0,  # New field
                 'last_reset': datetime.utcnow().isoformat()
             }
         
@@ -73,6 +75,7 @@ def get_usage_stats(user_id: int) -> Dict:
         return {
             'single_count': user.get('single_count', 0),
             'batch_count': user.get('batch_count', 0),
+            'image_generation_count': user.get('image_generation_count', 0),  # New field
             'last_reset': user.get('last_reset', datetime.utcnow().isoformat())
         }
     except Exception as e:
@@ -80,6 +83,7 @@ def get_usage_stats(user_id: int) -> Dict:
         return {
             'single_count': 0,
             'batch_count': 0,
+            'image_generation_count': 0,  # New field
             'last_reset': datetime.utcnow().isoformat()
         }
 
@@ -109,6 +113,18 @@ def increment_batch_usage(user_id: int) -> None:
         logger.error(f"Error incrementing batch usage for user {user_id}: {str(e)}")
 
 
+def increment_image_generation_usage(user_id: int) -> None:
+    """Increment image generation usage count"""
+    try:
+        user = get_user(user_id)
+        if user:
+            new_count = user['image_generation_count'] + 1
+            supabase.table('users').update({'image_generation_count': new_count}).eq('id', user_id).execute()
+            logger.info(f"Incremented image generation usage for user {user_id}, new count: {new_count}")
+    except Exception as e:
+        logger.error(f"Error incrementing image generation usage for user {user_id}: {str(e)}")
+
+
 def check_limits(user_id: int) -> bool:
     """Check if user is within their usage limits"""
     try:
@@ -124,7 +140,12 @@ def check_limits(user_id: int) -> bool:
             logger.info(f"User {user_id} exceeded batch generation limit ({stats['batch_count']}/1)")
             return False
             
-        logger.info(f"User {user_id} passed limits check. Single: {stats['single_count']}/3, Batch: {stats['batch_count']}/1")
+        # Check image generation limit (5 images per month for free users)
+        if stats['image_generation_count'] >= 5:
+            logger.info(f"User {user_id} exceeded image generation limit ({stats['image_generation_count']}/5)")
+            return False
+            
+        logger.info(f"User {user_id} passed limits check. Single: {stats['single_count']}/3, Batch: {stats['batch_count']}/1, Images: {stats['image_generation_count']}/5")
         return True
     except Exception as e:
         logger.error(f"Error checking limits for user {user_id}: {str(e)}")
@@ -137,6 +158,7 @@ def reset_usage(user_id: int) -> None:
         supabase.table('users').update({
             'single_count': 0,
             'batch_count': 0,
+            'image_generation_count': 0,  # Reset image counter too
             'last_reset': datetime.utcnow().isoformat()
         }).eq('id', user_id).execute()
         logger.info(f"Reset usage for user {user_id}")

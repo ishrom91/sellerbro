@@ -4,7 +4,7 @@ import pandas as pd
 import os
 from typing import Tuple, List
 from datetime import datetime
-from ai_service import generate_batch_descriptions
+from ai_service import generate_batch_descriptions, generate_product_image
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -62,9 +62,28 @@ async def process_excel_file(file_path: str, user_id: int) -> Tuple[str, List[st
         # Generate descriptions
         descriptions = await generate_batch_descriptions(products)
         
-        # Add descriptions to the dataframe
-        df_with_descriptions = df.copy()
-        df_with_descriptions['Описание'] = descriptions
+        # Generate product images for each product
+        image_paths = []
+        for i, product in enumerate(products):
+            try:
+                logger.info(f"Generating image for product {i+1}/{len(products)}: {product[:30]}...")
+                image_path = await generate_product_image(product)
+                image_paths.append(image_path)
+                
+                # Add delay between image generations to avoid rate limits
+                if i < len(products) - 1:  # Don't sleep after the last item
+                    logger.debug("Waiting 2 seconds between image generations to respect rate limits...")
+                    await asyncio.sleep(2)
+                    
+            except Exception as e:
+                logger.error(f"Error generating image for product '{product}': {str(e)}")
+                # Add an error message placeholder for failed images
+                image_paths.append(f"Ошибка генерации изображения: {str(e)}")
+        
+        # Add descriptions and image paths to the dataframe
+        df_with_results = df.copy()
+        df_with_results['Описание'] = descriptions
+        df_with_results['generated_image'] = image_paths
         
         # Create output file path
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -72,7 +91,7 @@ async def process_excel_file(file_path: str, user_id: int) -> Tuple[str, List[st
         output_path = os.path.join(os.path.dirname(file_path), output_filename)
         
         # Save the new dataframe to Excel
-        df_with_descriptions.to_excel(output_path, index=False)
+        df_with_results.to_excel(output_path, index=False)
         logger.info(f"Output file saved to: {output_path}")
         
         # Generate progress messages (every 5 items)
