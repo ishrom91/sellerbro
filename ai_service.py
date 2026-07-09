@@ -12,32 +12,29 @@ async def generate_description(product_name: str) -> str:
     """Generate a product description using HF Inference API with Qwen2.5-7B-Instruct"""
     client = InferenceClient(token=HF_TOKEN)
     
-    prompt = f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{product_name} [/INST]"
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": product_name}
+    ]
     
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
-            # Call the model using the InferenceClient
-            response = client.text_generation(
-                prompt=prompt,
+            response = client.chat_completion(
+                messages=messages,
                 model="Qwen/Qwen2.5-7B-Instruct",
-                max_new_tokens=500,
+                max_tokens=500,
                 temperature=0.7,
                 top_p=0.9,
-                repetition_penalty=1.1,
-                return_full_text=False
+                repetition_penalty=1.1
             )
             
-            if response:
-                description = response
-                # Clean up the response to remove any instruction artifacts
-                if '[/INST]' in description:
-                    description = description.split('[/INST]')[-1].strip()
+            if response and response.choices and len(response.choices) > 0:
+                description = response.choices[0].message.content
                 logger.info(f"Successfully generated description for: {product_name[:50]}...")
-                return description
+                return description.strip()
             else:
-                logger.warning(f"Empty response received")
-                raise Exception(f"Empty response from API")
+                raise Exception("Empty response from API")
         
         except Exception as e:
             logger.error(f"Error during HF API call (attempt {attempt + 1}): {str(e)}")
