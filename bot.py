@@ -2,16 +2,16 @@ import asyncio
 import logging
 import tempfile
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, FSInputFile
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
 from config import BOT_TOKEN
-from database import get_user, create_user, get_usage_stats, increment_single_usage, increment_batch_usage, check_limits, increment_image_generation_usage, increment_batch_with_photos_usage, check_limits_with_photos
-from ai_service import generate_description, generate_product_image, process_product_image, generate_description_from_photo, analyze_product_photo
-from batch_processor import process_excel_file, process_excel_with_photos
+from database import get_user, create_user, get_usage_stats, increment_single_usage, increment_batch_usage, check_limits
+from ai_service import generate_description, generate_description_from_photo, analyze_product_photo
+from batch_processor import process_excel_file
 
 # Verify that BOT_TOKEN is not None to satisfy type checker
 assert BOT_TOKEN is not None, "BOT_TOKEN must be set in environment"
@@ -42,32 +42,26 @@ async def cmd_start(message: Message):
         
         # Get usage stats
         stats = get_usage_stats(user_id)
-        remaining_single = max(0, 3 - stats['single_count'])
+        remaining_single = max(0, 5 - stats['single_count'])
         remaining_batch = 1 if stats['batch_count'] < 1 else 0
-        remaining_images = max(0, 5 - stats['image_generation_count'])  # 5 images per month
-        remaining_batch_with_photos = 1 if stats['batch_with_photos_count'] < 1 else 0  # 1 batch with photos per month
         
         # Send welcome message
         welcome_msg = (
-            f"🤖 Привет! Я бот для генерации SEO-оптимизированных описаний товаров и профессиональных фото-карт для маркетплейсов.\n\n"
+            f"🤖 Привет! Я бот для генерации SEO-оптимизированных описаний товаров для маркетплейсов.\n\n"
             f"📊 Ваш статус:\n"
-            f"   • Одиночные генерации: {remaining_single}/3 осталось\n"
-            f"   • Батч-обработка файлов: {remaining_batch}/1 осталось\n"
-            f"   • Генерация фото-карт: {remaining_images}/5 осталось\n"
-            f"   • Обработка каталогов с фото: {remaining_batch_with_photos}/1 осталось\n\n"
-            f"📸 НОВАЯ ФУНКЦИЯ: Отправь фото товара — я проанализирую его и создам описание только по реальным характеристикам! Никаких выдумок.\n\n"
+            f"   • Одиночные генерации: {remaining_single}/5 осталось\n"
+            f"   • Батч-обработка файлов: {remaining_batch}/1 осталось\n\n"
+            f"📸 Отправь фото товара — я проанализирую его и создам описание только по реальным характеристикам! Никаких выдумок.\n\n"
             f"Как это работает:\n"
             f"• Пришли фото товара\n"
             f"• Я проанализирую его и опишу только то, что вижу\n"
             f"• Если хочешь — добавь размер, бренд, цену (то, что не видно на фото)\n"
             f"• Получишь реалистичное SEO-описание!\n\n"
-            f"💡 Для текстовых запросов (без фото) я создам примерное описание.\n\n"
             f"💡 Как пользоваться:\n"
             f"   • Отправьте название товара - я создам SEO-описание\n"
-            f"   • Пришлите фото товара - я создам профессиональную фото-карточку\n"
-            f"   • Загрузите Excel/CSV файл с колонкой 'Название' или 'Товар' - я обработаю все позиции\n"
-            f"   • Загрузите ZIP файл с Excel и фото - я обработаю каталог целиком\n\n"
-            f"⚠️ Бесплатный лимит: 3 описания, 1 файл, 5 фото-карт и 1 каталог с фото в месяц."
+            f"   • Пришлите фото товара - я проанализирую его и создам описание на основе увиденного\n"
+            f"   • Загрузите Excel/CSV файл с колонкой 'Название' или 'Товар' - я обработаю все позиции\n\n"
+            f"⚠️ Бесплатный лимит: 5 описаний и 1 файл в месяц."
         )
         
         await message.answer(welcome_msg)
@@ -111,9 +105,9 @@ async def cmd_skip(message: Message):
             
             # Get updated stats
             new_stats = get_usage_stats(user_id)
-            remaining = max(0, 3 - new_stats['single_count'])
+            remaining = max(0, 5 - new_stats['single_count'])
             if remaining > 0:
-                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
+                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/5")
             else:
                 await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
                 
@@ -151,7 +145,7 @@ async def handle_photo(message: Message):
         if not check_limits(user_id):
             await message.answer(
                 "❌ Вы исчерпали лимит бесплатных генераций.\n"
-                "Доступно: 3 одиночные генерации и 1 батч-обработка файла в месяц.\n"
+                "Доступно: 5 одиночные генерации и 1 батч-обработка файла в месяц.\n"
                 "Для продолжения работы необходимо обновить статус."
             )
             return
@@ -221,11 +215,11 @@ async def handle_additional_info(message: Message):
         
         # Get updated stats
         new_stats = get_usage_stats(user_id)
-        remaining = max(0, 3 - new_stats['single_count'])
+        remaining = max(0, 5 - new_stats['single_count'])
         if remaining > 0:
-            await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
+            await message.answer(f"📊 Осталось одиночных генераций: {remaining}/5")
         else:
-            await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
+            await message.answer("📊 Вы исcherпали лимит одиночных генераций на этот месяц.")
             
         logger.info(f"Generated photo-based description with additional info for user {user_id}")
         
@@ -241,160 +235,6 @@ async def handle_additional_info(message: Message):
                 os.remove(photo_path)
             except Exception as e:
                 logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
-
-
-@dp.message(Command("card"))
-async def cmd_card(message: Message):
-    """Handle /card command - guide user to send a photo for image generation"""
-    try:
-        user_id = message.from_user.id
-        username = message.from_user.username or str(user_id)
-        
-        # Check if user exists, create if not
-        user = get_user(user_id)
-        if not user:
-            create_user(user_id, username)
-        
-        # Check image generation limits
-        stats = get_usage_stats(user_id)
-        if stats['image_generation_count'] >= 5:  # 5 images per month limit
-            await message.answer(
-                "❌ Вы исчерпали лимит бесплатной генерации фото-карт.\n"
-                "Доступно: 5 фото-карт в месяц.\n"
-                "Для продолжения работы необходимо обновить статус."
-            )
-            return
-        
-        await message.answer(
-            "📸 Чтобы создать профессиональную фото-карточку товара, просто пришлите мне фото.\n"
-            "Я улучшу его и сделаю как для коммерческой продажи."
-        )
-        logger.info(f"Card command handled for user: {user_id}")
-        
-    except Exception as e:
-        logger.error(f"Error in /card command: {str(e)}")
-        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
-
-
-@dp.message(F.document & F.document.mime_type.endswith('zip'))
-async def handle_zip_file(message: Message):
-    """Handle ZIP file uploads (Excel with photos catalog processing)"""
-    try:
-        user_id = message.from_user.id
-        username = message.from_user.username or str(user_id)
-        
-        # Check if user exists, create if not
-        user = get_user(user_id)
-        if not user:
-            create_user(user_id, username)
-        
-        # Check batch with photos usage limits
-        stats = get_usage_stats(user_id)
-        if stats['batch_with_photos_count'] >= 1:  # 1 batch with photos per month limit
-            await message.answer(
-                "❌ Вы исчерпали лимит бесплатной обработки каталогов с фото.\n"
-                "Доступно: 1 каталог с фото в месяц.\n"
-                "Для продолжения работы необходимо обновить статус."
-            )
-            return
-        
-        # Check file type
-        file_extension = message.document.file_name.split('.')[-1].lower()
-        if file_extension != 'zip':
-            await message.answer(
-                "❌ Неподдерживаемый формат файла.\n"
-                "Для обработки каталога с фото требуется ZIP файл."
-            )
-            return
-        
-        # Download file
-        file_info = await bot.get_file(message.document.file_id)
-        file_path = f"temp_catalog_{user_id}_{message.document.file_unique_id}.{file_extension}"
-        
-        try:
-            await bot.download_file(file_info.file_path, file_path)
-            logger.info(f"Downloaded ZIP file for user {user_id}: {file_path}")
-            
-            # Send processing message
-            processing_msg = await message.answer("📦 Начинаю обработку каталога с фото...")
-            
-            # Process the ZIP file
-            try:
-                output_path = await process_excel_with_photos(file_path, user_id)
-                
-                # Send completion message
-                await bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=processing_msg.message_id,
-                    text="✅ Каталог успешно обработан! Отправляю результат..."
-                )
-                
-                # Send the result file
-                try:
-                    result_file = FSInputFile(output_path)
-                    await message.answer_document(
-                        document=result_file,
-                        caption="Ваш обработанный каталог с SEO-описаниями и обработанными фото 📊"
-                    )
-                    
-                    # Increment batch with photos usage counter
-                    increment_batch_with_photos_usage(user_id)
-                    
-                    # Get updated stats
-                    new_stats = get_usage_stats(user_id)
-                    remaining_batch_with_photos = 1 if new_stats['batch_with_photos_count'] < 1 else 0
-                    if remaining_batch_with_photos > 0:
-                        await message.answer(f"📊 Осталось обработок каталогов: {remaining_batch_with_photos}/1")
-                    else:
-                        await message.answer("📊 Вы исчерпали лимит обработки каталогов на этот месяц.")
-                        
-                    logger.info(f"Catalog processing completed for user {user_id}, file sent: {output_path}")
-                    
-                except TelegramBadRequest as e:
-                    logger.error(f"TelegramBadRequest when sending file: {str(e)}")
-                    await message.answer("❌ Ошибка при отправке файла. Файл слишком большой или поврежден.")
-                    
-            except ValueError as ve:
-                logger.error(f"ValueError in ZIP processing for user {user_id}: {str(ve)}")
-                await bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=processing_msg.message_id,
-                    text=f"❌ Ошибка обработки каталога: {str(ve)}"
-                )
-            except Exception as e:
-                logger.error(f"Error in ZIP processing for user {user_id}: {str(e)}")
-                await bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=processing_msg.message_id,
-                    text="❌ Ошибка при обработке каталога. Проверьте формат и содержимое ZIP-файла."
-                )
-                
-        except Exception as download_error:
-            logger.error(f"Error downloading ZIP file for user {user_id}: {str(download_error)}")
-            await message.answer("❌ Ошибка загрузки файла. Пожалуйста, попробуйте снова.")
-            
-        finally:
-            # Clean up temporary files
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                    logger.debug(f"Removed temp ZIP file: {file_path}")
-                except Exception as cleanup_error:
-                    logger.warning(f"Could not remove temp ZIP file {file_path}: {str(cleanup_error)}")
-                    
-            # Remove output files if they were created
-            output_pattern = f"catalog_output_{user_id}_"
-            for file in os.listdir('.'):
-                if file.startswith(output_pattern) and file.endswith('.zip'):
-                    try:
-                        os.remove(file)
-                        logger.debug(f"Removed output ZIP file: {file}")
-                    except Exception as cleanup_error:
-                        logger.warning(f"Could not remove output ZIP file {file}: {str(cleanup_error)}")
-                        
-    except Exception as e:
-        logger.error(f"Error handling ZIP document from user {message.from_user.id}: {str(e)}")
-        await message.answer("Произошла ошибка при обработке ZIP-файла. Пожалуйста, попробуйте снова.")
 
 
 @dp.message(F.text & ~F.document)
@@ -413,7 +253,7 @@ async def handle_text_message(message: Message):
         if not check_limits(user_id):
             await message.answer(
                 "❌ Вы исчерпали лимит бесплатных генераций.\n"
-                "Доступно: 3 одиночные генерации и 1 батч-обработка файла в месяц.\n"
+                "Доступно: 5 одиночные генерации и 1 батч-обработка файла в месяц.\n"
                 "Для продолжения работы необходимо обновить статус."
             )
             return
@@ -443,9 +283,9 @@ async def handle_text_message(message: Message):
             
             # Get updated stats
             stats = get_usage_stats(user_id)
-            remaining = max(0, 3 - stats['single_count'])
+            remaining = max(0, 5 - stats['single_count'])
             if remaining > 0:
-                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
+                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/5")
             else:
                 await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
                 
@@ -481,7 +321,7 @@ async def handle_document(message: Message):
         if stats['batch_count'] >= 1:
             await message.answer(
                 "❌ Вы исчерпали лимит бесплатной батч-обработки файлов.\n"
-                "Доступно: 3 одиночные генерации и 1 батч-обработка файла в месяц.\n"
+                "Доступно: 5 одиночные генерации и 1 батч-обработка файла в месяц.\n"
                 "Для продолжения работы необходимо обновить статус."
             )
             return
@@ -532,7 +372,7 @@ async def handle_document(message: Message):
                     result_file = FSInputFile(output_path)
                     await message.answer_document(
                         document=result_file,
-                        caption="Ваш файл с добавленными описаниями и ссылками на фото-карты 📊"
+                        caption="Ваш файл с добавленными SEO-описаниями 📊"
                     )
                     
                     # Increment batch usage counter
