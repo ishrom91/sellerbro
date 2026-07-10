@@ -45,6 +45,7 @@ async def send_subscription_invoice_stars(bot: Bot, chat_id: int) -> None:
             "⚡ Приоритетная скорость"
         ),
         payload="stars_subscription_pro_1month",
+        provider_token="",  # THIS IS REQUIRED FOR XTR/Stars
         currency="XTR",
         prices=prices,
     )
@@ -68,6 +69,7 @@ async def send_package_invoice_stars(bot: Bot, chat_id: int, package_type: str) 
             f"💰 Цена: {pkg['rub']}₽"
         ),
         payload=f"stars_package_{package_type}",
+        provider_token="",  # THIS IS REQUIRED FOR XTR/Stars
         currency="XTR",
         prices=prices,
     )
