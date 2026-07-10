@@ -9,6 +9,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
 
 # Validation
 if not BOT_TOKEN:
@@ -19,6 +21,10 @@ if not SUPABASE_URL:
     raise ValueError("SUPABASE_URL environment variable is required")
 if not SUPABASE_KEY:
     raise ValueError("SUPABASE_KEY environment variable is required")
+if not YOOKASSA_SHOP_ID:
+    raise ValueError("YOOKASSA_SHOP_ID environment variable is required")
+if not YOOKASSA_SECRET_KEY:
+    raise ValueError("YOOKASSA_SECRET_KEY environment variable is required")
 
 # NEW SEO-optimized system prompt for marketplace product descriptions
 SYSTEM_PROMPT = """

@@ -4,14 +4,23 @@ import tempfile
 import os
 from typing import Dict, Any, Optional
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message, FSInputFile, PreCheckoutQuery
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import CallbackQuery
 
 from config import BOT_TOKEN
-from database import get_user, create_user, get_usage_stats, increment_single_usage, increment_batch_usage, check_limits
+from database import get_user, create_user, get_usage_stats, increment_single_usage, increment_batch_usage, check_limits, update_check_limits, after_generation, get_user_status_message
 from ai_service import generate_description, generate_description_from_photo, analyze_product_photo
 from batch_processor import process_excel_file
+from payment_service import (
+    send_subscription_invoice_stars,
+    send_package_invoice_stars,
+    send_subscription_payment_yookassa,
+    send_package_payment_yookassa,
+    process_successful_stars_payment,
+    process_yookassa_webhook,
+)
 
 # Verify that BOT_TOKEN is not None to satisfy type checker
 assert BOT_TOKEN is not None, "BOT_TOKEN must be set in environment"
@@ -42,14 +51,14 @@ async def cmd_start(message: Message):
         
         # Get usage stats
         stats = get_usage_stats(user_id)
-        remaining_single = max(0, 5 - stats['single_count'])
+        remaining_single = max(0, 3 - stats['single_count'])
         remaining_batch = 1 if stats['batch_count'] < 1 else 0
         
         # Send welcome message
         welcome_msg = (
             f"🤖 Привет! Я бот для генерации SEO-оптимизированных описаний товаров для маркетплейсов.\n\n"
             f"📊 Ваш статус:\n"
-            f"   • Одиночные генерации: {remaining_single}/5 осталось\n"
+            f"   • Одиночные генерации: {remaining_single}/3 осталось\n"
             f"   • Батч-обработка файлов: {remaining_batch}/1 осталось\n\n"
             f"📸 Отправь фото товара — я проанализирую его и создам описание только по реальным характеристикам! Никаких выдумок.\n\n"
             f"Как это работает:\n"
@@ -61,15 +70,120 @@ async def cmd_start(message: Message):
             f"   • Отправьте название товара - я создам SEO-описание\n"
             f"   • Пришлите фото товара - я проанализирую его и создам описание на основе увиденного\n"
             f"   • Загрузите Excel/CSV файл с колонкой 'Название' или 'Товар' - я обработаю все позиции\n\n"
-            f"⚠️ Бесплатный лимит: 5 описаний и 1 файл в месяц."
+            f"⚠️ Бесплатный лимит: 3 описания и 1 файл в месяц."
         )
         
         await message.answer(welcome_msg)
+        await message.answer("Для просмотра тарифов используйте команду /pricing")
         logger.info(f"Start command handled for user: {user_id}")
         
     except Exception as e:
         logger.error(f"Error in /start command: {str(e)}")
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+
+@dp.message(Command("pricing"))
+async def cmd_pricing(message: Message):
+    """Show pricing and tariff plans"""
+    text = (
+        " **ТАРИФЫ AI SellerBro**\n\n"
+        "🆓 **Бесплатный тариф:**\n"
+        "• 3 генерации описаний в день\n"
+        "• 1 анализ фото в день\n"
+        "• 1 пакетная обработка Excel в месяц\n\n"
+        "👑 **Подписка Pro — 299₽/мес:**\n"
+        "• Безлимитные генерации\n"
+        "• Безлимитные анализы фото\n"
+        "• Безлимитные пакеты Excel\n"
+        "• Приоритетная скорость\n\n"
+        "📦 **Разовые пакеты:**\n"
+        "• 100₽ — 20 генераций, 30 дней\n"
+        "• 250₽ — 60 генераций, 30 дней\n"
+        "• 500₽ — 150 генераций, 60 дней\n\n"
+        " Выберите товар и способ оплаты:"
+    )
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👑 Подписка Pro", callback_data="select_subscription")],
+        [InlineKeyboardButton(text="📦 Малый пакет (20 ген)", callback_data="select_package_small")],
+        [InlineKeyboardButton(text="📦 Средний пакет (60 ген)", callback_data="select_package_medium")],
+        [InlineKeyboardButton(text="📦 Большой пакет (150 ген)", callback_data="select_package_large")],
+        [InlineKeyboardButton(text="📊 Мой статус", callback_data="my_status")],
+    ])
+    
+    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("select_"))
+async def callback_select_product(callback: CallbackQuery):
+    """Show payment method selection"""
+    await callback.answer()
+    
+    product = callback.data.replace("select_", "")
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data=f"pay_stars_{product}")],
+        [InlineKeyboardButton(text="💳 Карта (ЮKassa)", callback_data=f"pay_yookassa_{product}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_pricing")],
+    ])
+    
+    if product == "subscription":
+        text = "👑 **Подписка Pro — 299₽**\n\nВыберите способ оплаты:"
+    elif product.startswith("package_"):
+        pkg_type = product.replace("package_", "")
+        from payment_service import PACKAGES
+        pkg = PACKAGES.get(pkg_type, {})
+        text = f"📦 **{pkg.get('name', 'Пакет')} — {pkg.get('rub', 0)}₽**\n\nВыберите способ оплаты:"
+    
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@dp.callback_query(lambda c: c.data == "back_to_pricing")
+async def callback_back_to_pricing(callback: CallbackQuery):
+    await callback.answer()
+    await cmd_pricing(callback.message)
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("pay_stars_"))
+async def callback_pay_stars(callback: CallbackQuery):
+    """Process Telegram Stars payment"""
+    await callback.answer()
+    
+    product = callback.data.replace("pay_stars_", "")
+    user_id = callback.from_user.id
+    
+    if product == "subscription":
+        await send_subscription_invoice_stars(callback.bot, callback.message.chat.id)
+    elif product.startswith("package_"):
+        package_type = product.replace("package_", "")
+        await send_package_invoice_stars(callback.bot, callback.message.chat.id, package_type)
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("pay_yookassa_"))
+async def callback_pay_yookassa(callback: CallbackQuery):
+    """Process YooKassa payment"""
+    await callback.answer()
+    
+    product = callback.data.replace("pay_yookassa_", "")
+    user_id = callback.from_user.id
+    
+    if product == "subscription":
+        await send_subscription_payment_yookassa(callback.bot, callback.message.chat.id, user_id)
+    elif product.startswith("package_"):
+        package_type = product.replace("package_", "")
+        await send_package_payment_yookassa(callback.bot, callback.message.chat.id, user_id, package_type)
+
+
+@dp.callback_query(lambda c: c.data == "my_status")
+async def callback_my_status(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    status_msg = get_user_status_message(user_id)
+    await callback.answer()
+    await callback.message.answer(status_msg, parse_mode="Markdown")
 
 
 @dp.message(Command("skip"))
@@ -83,6 +197,15 @@ async def cmd_skip(message: Message):
         photo_path = user_states[user_id]['photo_path']
         
         try:
+            # Check if user can generate
+            if not update_check_limits(user_id, 'photo'):
+                await message.answer(
+                    "❌ Лимит исчерпан!\n\n"
+                    "У вас использованы все бесплатные анализы фото на сегодня.\n\n"
+                    "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
+                )
+                return
+
             # Generate description based on photo only (no additional info)
             generating_msg = await message.answer("⏳ Генерирую SEO-описание на основе фото...")
             
@@ -100,14 +223,14 @@ async def cmd_skip(message: Message):
                 except Exception as e:
                     logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
             
-            # Increment usage counter
-            increment_single_usage(user_id)
+            # Update usage after successful generation
+            after_generation(user_id, 'photo')
             
             # Get updated stats
             new_stats = get_usage_stats(user_id)
-            remaining = max(0, 5 - new_stats['single_count'])
+            remaining = max(0, 3 - new_stats['single_count'])
             if remaining > 0:
-                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/5")
+                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
             else:
                 await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
                 
@@ -142,11 +265,11 @@ async def handle_photo(message: Message):
             create_user(user_id, username)
         
         # Check usage limits
-        if not check_limits(user_id):
+        if not update_check_limits(user_id, 'photo'):
             await message.answer(
-                "❌ Вы исчерпали лимит бесплатных генераций.\n"
-                "Доступно: 5 одиночные генерации и 1 батч-обработка файла в месяц.\n"
-                "Для продолжения работы необходимо обновить статус."
+                "❌ Лимит исчерпан!\n\n"
+                "У вас использованы все бесплатные анализы фото на сегодня.\n\n"
+                "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
             )
             return
         
@@ -189,6 +312,15 @@ async def handle_additional_info(message: Message):
     photo_path = user_states[user_id]['photo_path']
     
     try:
+        # Check if user can generate
+        if not update_check_limits(user_id, 'photo'):
+            await message.answer(
+                "❌ Лимит исчерпан!\n\n"
+                "У вас использованы все бесплатные анализы фото на сегодня.\n\n"
+                "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
+            )
+            return
+
         # Get the additional information from user
         additional_info = message.text
         
@@ -210,16 +342,16 @@ async def handle_additional_info(message: Message):
             except Exception as e:
                 logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
         
-        # Increment usage counter
-        increment_single_usage(user_id)
+        # Update usage after successful generation
+        after_generation(user_id, 'photo')
         
         # Get updated stats
         new_stats = get_usage_stats(user_id)
-        remaining = max(0, 5 - new_stats['single_count'])
+        remaining = max(0, 3 - new_stats['single_count'])
         if remaining > 0:
-            await message.answer(f"📊 Осталось одиночных генераций: {remaining}/5")
+            await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
         else:
-            await message.answer("📊 Вы исcherпали лимит одиночных генераций на этот месяц.")
+            await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
             
         logger.info(f"Generated photo-based description with additional info for user {user_id}")
         
@@ -250,11 +382,11 @@ async def handle_text_message(message: Message):
             create_user(user_id, username)
         
         # Check usage limits
-        if not check_limits(user_id):
+        if not update_check_limits(user_id, 'single'):
             await message.answer(
-                "❌ Вы исчерпали лимит бесплатных генераций.\n"
-                "Доступно: 5 одиночные генерации и 1 батч-обработка файла в месяц.\n"
-                "Для продолжения работы необходимо обновить статус."
+                "❌ Лимит исчерпан!\n\n"
+                "У вас использованы все 3 бесплатные генерации на сегодня.\n\n"
+                "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
             )
             return
         
@@ -271,8 +403,8 @@ async def handle_text_message(message: Message):
             product_name = message.text.strip()
             description = await generate_description(product_name)
             
-            # Increment usage counter
-            increment_single_usage(user_id)
+            # Update usage after successful generation
+            after_generation(user_id, 'single')
             
             # Update thinking message with result
             await bot.edit_message_text(
@@ -283,9 +415,9 @@ async def handle_text_message(message: Message):
             
             # Get updated stats
             stats = get_usage_stats(user_id)
-            remaining = max(0, 5 - stats['single_count'])
+            remaining = max(0, 3 - stats['single_count'])
             if remaining > 0:
-                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/5")
+                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
             else:
                 await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
                 
@@ -317,12 +449,11 @@ async def handle_document(message: Message):
             create_user(user_id, username)
         
         # Check batch usage limits
-        stats = get_usage_stats(user_id)
-        if stats['batch_count'] >= 1:
+        if not update_check_limits(user_id, 'batch'):
             await message.answer(
-                "❌ Вы исчерпали лимит бесплатной батч-обработки файлов.\n"
-                "Доступно: 5 одиночные генерации и 1 батч-обработка файла в месяц.\n"
-                "Для продолжения работы необходимо обновить статус."
+                "❌ Лимит исчерпан!\n\n"
+                "У вас использованы все бесплатные батчи на месяц.\n\n"
+                "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
             )
             return
         
@@ -375,8 +506,8 @@ async def handle_document(message: Message):
                         caption="Ваш файл с добавленными SEO-описаниями 📊"
                     )
                     
-                    # Increment batch usage counter
-                    increment_batch_usage(user_id)
+                    # Update usage after successful generation
+                    after_generation(user_id, 'batch')
                     
                     # Get updated stats
                     new_stats = get_usage_stats(user_id)
@@ -433,6 +564,26 @@ async def handle_document(message: Message):
     except Exception as e:
         logger.error(f"Error handling document from user {message.from_user.id}: {str(e)}")
         await message.answer("Произошла ошибка при обработке файла. Пожалуйста, попробуйте снова.")
+
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    """Answer pre-checkout query (required by Telegram)"""
+    await pre_checkout_query.bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+
+@dp.message(F.successful_payment)
+async def process_successful_stars_payment_handler(message: Message):
+    """Handle successful Telegram Stars payment"""
+    payment = message.successful_payment
+    user_id = message.from_user.id
+    payload = payment.invoice_payload
+    payment_id = payment.telegram_payment_charge_id
+    
+    logger.info(f"Successful Stars payment from user {user_id}: payload={payload}, id={payment_id}")
+    
+    result_message = await process_successful_stars_payment(payload, payment_id, user_id)
+    await message.answer(result_message, parse_mode="Markdown")
 
 
 async def main():
