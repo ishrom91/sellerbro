@@ -8,7 +8,7 @@ from database import (
     get_active_subscription, get_user_packages, 
     get_total_package_generations
 )
-from config import YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, BOT_WEBHOOK_URL
+from config import YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
     YooConfiguration.account_id = YOOKASSA_SHOP_ID
     YooConfiguration.secret_key = YOOKASSA_SECRET_KEY
+
+# Check if YooKassa is properly configured
+YOOKASSA_CONFIGURED = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID != "test_shop_id" and YOOKASSA_SECRET_KEY != "test_secret_key")
 
 # Prices
 SUBSCRIPTION_PRO_RUB = 299
@@ -111,6 +114,10 @@ def create_yookassa_payment(user_id: int, amount: int, description: str, payload
 
 async def send_subscription_payment_yookassa(bot: Bot, chat_id: int, user_id: int) -> None:
     """Send YooKassa payment link for Pro subscription"""
+    if not YOOKASSA_CONFIGURED:
+        await bot.send_message(chat_id=chat_id, text="💳 Оплата картой временно недоступна. Используйте Telegram Stars ⭐")
+        return
+    
     try:
         url = create_yookassa_payment(
             user_id=user_id,
@@ -144,6 +151,10 @@ async def send_subscription_payment_yookassa(bot: Bot, chat_id: int, user_id: in
 
 async def send_package_payment_yookassa(bot: Bot, chat_id: int, user_id: int, package_type: str) -> None:
     """Send YooKassa payment link for one-time package"""
+    if not YOOKASSA_CONFIGURED:
+        await bot.send_message(chat_id=chat_id, text="💳 Оплата картой временно недоступна. Используйте Telegram Stars ⭐")
+        return
+    
     if package_type not in PACKAGES:
         return
     
@@ -230,6 +241,9 @@ def process_yookassa_webhook(event_json: dict) -> dict:
     """Process YooKassa webhook notification.
     Returns dict with status and message.
     """
+    if not YOOKASSA_CONFIGURED:
+        return {'status': 'error', 'message': 'YooKassa not configured'}
+    
     try:
         event_type = event_json.get('type')
         event_object = event_json.get('object', {})
