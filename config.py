@@ -9,10 +9,14 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
 
-# Hugging Face
-HF_TOKEN = os.getenv("HF_TOKEN")
-if not HF_TOKEN:
-    raise ValueError("HF_TOKEN environment variable is required")
+# OpenRouter API
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY environment variable is required")
+
+# Models
+AI_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+VISION_MODEL = "google/gemini-2.0-flash-exp:free"
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")

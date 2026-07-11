@@ -4,6 +4,6 @@ openpyxl
 httpx
 supabase==2.5.0
 python-dotenv==1.0.1
-huggingface-hub
+openai
 yookassa
 pillow

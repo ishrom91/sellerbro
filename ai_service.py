@@ -5,8 +5,14 @@ import os
 import json
 import base64
 from pathlib import Path
-from huggingface_hub import InferenceClient
-from config import HF_TOKEN, SYSTEM_PROMPT
+from openai import OpenAI
+from config import OPENROUTER_API_KEY, AI_MODEL, VISION_MODEL, SYSTEM_PROMPT
+
+# Initialize OpenRouter client
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -17,8 +23,6 @@ async def analyze_product_photo(image_path: str) -> dict:
     """Analyze product photo using Qwen2.5-VL vision model.
     Returns dict with real characteristics visible in the photo.
     """
-    client = InferenceClient(token=HF_TOKEN)
-    
     # Read image and encode as base64
     with open(image_path, "rb") as f:
         image_bytes = f.read()
@@ -170,8 +174,6 @@ async def generate_description_from_photo(image_path: str, user_notes: str = "")
 
 
 async def generate_description(product_name: str) -> str:
-    client = InferenceClient(token=HF_TOKEN)
-    
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": product_name}
@@ -180,12 +182,11 @@ async def generate_description(product_name: str) -> str:
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
-            response = client.chat_completion(
+            response = client.chat.completions.create(
+                model=AI_MODEL,
                 messages=messages,
-                model="Qwen/Qwen2.5-7B-Instruct",
-                max_tokens=500,
-                temperature=0.7,
-                top_p=0.9
+                max_tokens=1000,
+                temperature=0.7
             )
             
             if response and response.choices and len(response.choices) > 0:
