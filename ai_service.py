@@ -6,7 +6,7 @@ import json
 import base64
 from pathlib import Path
 from openai import OpenAI
-from config import OPENROUTER_API_KEY, AI_MODEL, VISION_MODEL, SYSTEM_PROMPT
+from config import OPENROUTER_API_KEY, AI_MODEL, VISION_MODEL, SYSTEM_PROMPT, FALLBACK_MODELS
 
 # Initialize OpenRouter client
 client = OpenAI(
@@ -84,7 +84,7 @@ async def analyze_product_photo(image_path: str) -> dict:
             raw_text = response.choices[0].message.content.strip()
             # Try to parse JSON
             try:
-                # Try to extract JSON if wrapped in markdown
+                # Try to extract JSON if wrapped in code
                 if "```" in raw_text:
                     raw_text = raw_text.split("```")[1]
                     if raw_text.startswith("json"):
@@ -101,6 +101,36 @@ async def analyze_product_photo(image_path: str) -> dict:
     except Exception as e:
         logger.error(f"Error in vision analysis: {str(e)}")
         return {}
+
+
+async def generate_description(product_name: str) -> str:
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"Создай SEO-описание для товара: {product_name}"}
+    ]
+    
+    # Try main model first, then fallbacks
+    models_to_try = [AI_MODEL] + FALLBACK_MODELS
+    
+    for model_name in models_to_try:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                max_tokens=1000,
+                temperature=0.7,
+            )
+            
+            if response and response.choices and len(response.choices) > 0:
+                description = response.choices[0].message.content.strip()
+                logger.info(f"Successfully generated with model: {model_name}")
+                return description
+        except Exception as e:
+            logger.warning(f"Model {model_name} failed: {str(e)[:100]}, trying next...")
+            await asyncio.sleep(2)
+            continue
+    
+    raise Exception("All models failed. Please try again later.")
 
 
 async def generate_description_from_photo(image_path: str, user_notes: str = "") -> str:
@@ -150,64 +180,28 @@ async def generate_description_from_photo(image_path: str, user_notes: str = "")
         {"role": "user", "content": "Создай SEO-описание для этого товара на основе анализа фото"}
     ]
     
-    max_retries = 2
-    for attempt in range(max_retries + 1):
+    # Try main model first, then fallbacks
+    models_to_try = ["Qwen/Qwen2.5-7B-Instruct", "Qwen/Qwen2-VL-7B-Instruct", "microsoft/DialoGPT-medium"]
+    
+    for model_name in models_to_try:
         try:
             response = client.chat_completion(
                 messages=messages,
-                model="Qwen/Qwen2.5-7B-Instruct",
+                model=model_name,
                 max_tokens=800,
                 temperature=0.7
             )
             
             if response and response.choices:
                 description = response.choices[0].message.content.strip()
-                logger.info(f"Generated photo-based description: {description[:100]}...")
+                logger.info(f"Successfully generated photo description with model: {model_name}")
                 return description
-            
         except Exception as e:
-            logger.error(f"Error (attempt {attempt + 1}): {str(e)}")
-            if attempt == max_retries:
-                raise
+            logger.warning(f"Photo model {model_name} failed: {str(e)[:100]}, trying next...")
+            await asyncio.sleep(2)
+            continue
     
-    raise Exception("Failed to generate description")
-
-
-async def generate_description(product_name: str) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": product_name}
-    ]
-    
-    max_retries = 2
-    for attempt in range(max_retries + 1):
-        try:
-            response = client.chat.completions.create(
-                model=AI_MODEL,
-                messages=messages,
-                max_tokens=1000,
-                temperature=0.7
-            )
-            
-            if response and response.choices and len(response.choices) > 0:
-                description = response.choices[0].message.content
-                logger.info(f"Successfully generated description for: {product_name[:50]}...")
-                return description.strip()
-            else:
-                raise Exception("Empty response from API")
-        
-        except Exception as e:
-            logger.error(f"Error during HF API call (attempt {attempt + 1}): {str(e)}")
-            if "Model is currently loading" in str(e) or "Model is loading" in str(e):
-                await asyncio.sleep(20)
-                continue
-            elif "Rate limit" in str(e) or "Too many requests" in str(e) or "429" in str(e):
-                await asyncio.sleep(10)
-                continue
-            elif attempt == max_retries:
-                raise Exception(f"Failed to get response from HF API after {max_retries + 1} attempts: {str(e)}")
-    
-    raise Exception("Max retries exceeded without successful response")
+    raise Exception("All photo models failed. Please try again later.")
 
 
 async def generate_batch_descriptions(products: list[str]) -> list[str]:
@@ -222,8 +216,8 @@ async def generate_batch_descriptions(products: list[str]) -> list[str]:
             
             # Add delay between API calls to avoid rate limits
             if i < len(products) - 1:  # Don't sleep after the last item
-                logger.debug("Waiting 2 seconds between API calls to respect rate limits...")
-                await asyncio.sleep(2)
+                logger.debug("Waiting 5 seconds between API calls to respect rate limits...")
+                await asyncio.sleep(5)
                 
         except Exception as e:
             logger.error(f"Error generating description for product '{product}': {str(e)}")

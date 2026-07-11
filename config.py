@@ -15,7 +15,17 @@ if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY environment variable is required")
 
 # Models
-AI_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+# Main model - stable and fast
+AI_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+
+# Fallback models in order of preference
+FALLBACK_MODELS = [
+    "google/gemma-2-9b-it:free",
+    "mistralai/mistral-7b-instruct:free",
+    "huggingfaceh4/zephyr-7b-beta:free",
+]
+
+# Vision model
 VISION_MODEL = "google/gemini-2.0-flash-exp:free"
 
 # Supabase
