@@ -2,9 +2,10 @@ import asyncio
 import logging
 import tempfile
 import os
+import time
 from typing import Dict, Any, Optional
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, FSInputFile, PreCheckoutQuery
+from aiogram.types import Message, FSInputFile, PreCheckoutQuery, Update
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
@@ -33,6 +34,18 @@ bot = Bot(token=BOT_TOKEN)
 
 dp = Dispatcher()
 
+# Simple rate limiter
+user_last_message = {}
+
+async def check_rate_limit(user_id: int, min_interval: int = 2) -> bool:
+    """Check if user is sending messages too frequently"""
+    now = time.time()
+    if user_id in user_last_message:
+        if now - user_last_message[user_id] < min_interval:
+            return False
+    user_last_message[user_id] = now
+    return True
+
 # Dictionary to store user states for photo processing
 user_states = {}
 
@@ -40,19 +53,33 @@ user_states = {}
 async def cmd_start(message: Message):
     """Handle /start command"""
     try:
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
+            return
+
         user_id = message.from_user.id
         username = message.from_user.username or str(user_id)
         
         # Check if user exists, create if not
-        user = get_user(user_id)
-        if not user:
-            create_user(user_id, username)
-            logger.info(f"New user registered: {user_id} (@{username})")
+        try:
+            user = get_user(user_id)
+            if not user:
+                create_user(user_id, username)
+                logger.info(f"New user registered: {user_id} (@{username})")
+        except Exception as db_error:
+            logger.error(f"Database error when checking/creating user {user_id}: {db_error}")
+            await message.answer("⚠️ Произошла ошибка базы данных. Пожалуйста, попробуйте позже.")
+            return
         
         # Get usage stats
-        stats = get_usage_stats(user_id)
-        remaining_single = max(0, 3 - stats['single_count'])
-        remaining_batch = 1 if stats['batch_count'] < 1 else 0
+        try:
+            stats = get_usage_stats(user_id)
+            remaining_single = max(0, 3 - stats['single_count'])
+            remaining_batch = 1 if stats['batch_count'] < 1 else 0
+        except Exception as db_error:
+            logger.error(f"Database error when getting usage stats for user {user_id}: {db_error}")
+            await message.answer("⚠️ Произошла ошибка получения статистики. Пожалуйста, попробуйте позже.")
+            return
         
         # Send welcome message
         welcome_msg = (
@@ -70,7 +97,8 @@ async def cmd_start(message: Message):
             f"   • Отправьте название товара - я создам SEO-описание\n"
             f"   • Пришлите фото товара - я проанализирую его и создам описание на основе увиденного\n"
             f"   • Загрузите Excel/CSV файл с колонкой 'Название' или 'Товар' - я обработаю все позиции\n\n"
-            f"⚠️ Бесплатный лимит: 3 описания и 1 файл в месяц."
+            f"⚠️ Бесплатный лимит: 3 описания и 1 файл в месяц.\n\n"
+            f"Используя бота, вы соглашаетесь с /terms и /privacy"
         )
         
         await message.answer(welcome_msg)
@@ -78,191 +106,382 @@ async def cmd_start(message: Message):
         logger.info(f"Start command handled for user: {user_id}")
         
     except Exception as e:
-        logger.error(f"Error in /start command: {str(e)}")
-        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+        logger.error(f"Error in /start command: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
+
+
+@dp.message(Command("terms"))
+async def cmd_terms(message: Message):
+    try:
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
+            return
+
+        terms_text = """
+📄 ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ
+
+1. Общие положения
+Настоящее соглашение регулирует использование Telegram-бота AI SellerBro.
+
+2. Предмет соглашения
+Бот предоставляет услуги по генерации SEO-описаний товаров для маркетплейсов с использованием искусственного интеллекта.
+
+3. Условия использования
+- Пользователь обязуется использовать бота в законных целях
+- Запрещается использование бота для генерации контента, нарушающего законодательство РФ
+- Администрация не несёт ответственности за содержание сгенерированных текстов
+
+4. Оплата и возвраты
+- Оплата производится через Telegram Stars или ЮKassa
+- Возврат средств возможен в течение 14 дней при технических проблемах
+- После успешной генерации возврат не производится
+
+5. Ограничения ответственности
+- Бот использует AI-модели, которые могут генерировать неточную информацию
+- Пользователь обязан проверять сгенерированные описания перед публикацией
+- Администрация не гарантирует коммерческий успех карточек товаров
+
+6. Изменение условий
+Администрация оставляет за собой право изменять условия соглашения с уведомлением пользователей.
+
+Используя бота, вы соглашаетесь с данными условиями.
+    """
+        await message.answer(terms_text.strip())
+    except Exception as e:
+        logger.error(f"Error in /terms command: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
+
+
+@dp.message(Command("privacy"))
+async def cmd_privacy(message: Message):
+    try:
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
+            return
+
+        privacy_text = """
+🔒 ПОЛИТИКА КОНФИДЕНЦИАЛЬНОСТИ
+
+1. Какие данные мы собираем
+- Telegram ID пользователя
+- История использования бота
+- Информация о платежах (через платёжные системы)
+
+2. Как мы используем данные
+- Для предоставления услуг (генерация описаний)
+- Для обработки платежей
+- Для улучшения качества сервиса
+
+3. Хранение и защита данных
+- Данные хранятся в защищённой базе данных
+- Мы не передаём данные третьим лицам
+- Платёжная информация обрабатывается через сертифицированные платёжные системы
+
+4. Ваши права
+- Вы можете запросить удаление своих данных
+- Вы можете отозвать согласие на обработку данных
+
+5. Контакты
+По вопросам конфиденциальности: @your_support_username
+
+Используя бота, вы соглашаетесь с политикой конфиденциальности.
+    """
+        await message.answer(privacy_text.strip())
+    except Exception as e:
+        logger.error(f"Error in /privacy command: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = """
+📖 СПРАВКА ПО БОТУ AI SellerBro
+
+🎯 Основные команды:
+/start - Начать работу с ботом
+/pricing - Посмотреть тарифы и цены
+/help - Показать эту справку
+/support - Связаться с поддержкой
+/terms - Пользовательское соглашение
+/privacy - Политика конфиденциальности
+
+💡 Как пользоваться:
+
+1️⃣ Генерация описания:
+Просто отправьте название товара боту.
+Пример: "Платье женское летнее хлопок"
+
+2️⃣ Анализ фото:
+Отправьте фото товара боту.
+Бот проанализирует фото и создаст описание на основе реальных характеристик.
+
+3️⃣ Пакетная обработка:
+Отправьте Excel файл с колонкой "Название".
+Бот создаст описания для всех товаров.
+
+📊 Лимиты бесплатного тарифа:
+• 3 генерации в день
+• 1 анализ фото в день
+• 1 пакетная обработка в месяц
+
+💎 Хотите больше? Используйте /pricing для покупки подписки или пакетов.
+
+❓ Остались вопросы? Используйте /support
+    """
+    await message.answer(help_text.strip())
+
+
+@dp.message(Command("support"))
+async def cmd_support(message: Message):
+    support_text = """
+🆘 ПОДДЕРЖКА
+
+Если у вас возникли вопросы или проблемы:
+
+📧 Напишите в поддержку: @is_roman
+
+📖 Полезные ссылки:
+• Справка: /help
+• Тарифы: /pricing
+• Соглашение: /terms
+• Конфиденциальность: /privacy
+
+Мы стараемся отвечать в течение 24 часов.
+    """
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Написать в поддержку", url="https://t.me/is_roman")]
+    ])
+    await message.answer(support_text.strip(), reply_markup=keyboard)
 
 
 @dp.message(Command("pricing"))
 async def cmd_pricing(message: Message):
     """Show pricing and tariff plans"""
-    text = (
-        " **ТАРИФЫ AI SellerBro**\n\n"
-        "🆓 **Бесплатный тариф:**\n"
-        "• 3 генерации описаний в день\n"
-        "• 1 анализ фото в день\n"
-        "• 1 пакетная обработка Excel в месяц\n\n"
-        "👑 **Подписка Pro — 299₽/мес:**\n"
-        "• Безлимитные генерации\n"
-        "• Безлимитные анализы фото\n"
-        "• Безлимитные пакеты Excel\n"
-        "• Приоритетная скорость\n\n"
-        "📦 **Разовые пакеты:**\n"
-        "• 100₽ — 20 генераций, 30 дней\n"
-        "• 250₽ — 60 генераций, 30 дней\n"
-        "• 500₽ — 150 генераций, 60 дней\n\n"
-        " Выберите товар и способ оплаты:"
-    )
-    
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👑 Подписка Pro", callback_data="select_subscription")],
-        [InlineKeyboardButton(text="📦 Малый пакет (20 ген)", callback_data="select_package_small")],
-        [InlineKeyboardButton(text="📦 Средний пакет (60 ген)", callback_data="select_package_medium")],
-        [InlineKeyboardButton(text="📦 Большой пакет (150 ген)", callback_data="select_package_large")],
-        [InlineKeyboardButton(text="📊 Мой статус", callback_data="my_status")],
-    ])
-    
-    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+    try:
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
+            return
+
+        text = (
+            " **ТАРИФЫ AI SellerBro**\n\n"
+            "🆓 **Бесплатный тариф:**\n"
+            "• 3 генерации описаний в день\n"
+            "• 1 анализ фото в день\n"
+            "• 1 пакетная обработка Excel в месяц\n\n"
+            "👑 **Подписка Pro — 299₽/мес:**\n"
+            "• Безлимитные генерации\n"
+            "• Безлимитные анализы фото\n"
+            "• Безлимитные пакеты Excel\n"
+            "• Приоритетная скорость\n\n"
+            "📦 **Разовые пакеты:**\n"
+            "• 100₽ — 20 генераций, 30 дней\n"
+            "• 250₽ — 60 генераций, 30 дней\n"
+            "• 500₽ — 150 генераций, 60 дней\n\n"
+            " Выберите товар и способ оплаты:"
+        )
+        
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👑 Подписка Pro", callback_data="select_subscription")],
+            [InlineKeyboardButton(text="📦 Малый пакет (20 ген)", callback_data="select_package_small")],
+            [InlineKeyboardButton(text="📦 Средний пакет (60 ген)", callback_data="select_package_medium")],
+            [InlineKeyboardButton(text="📦 Большой пакет (150 ген)", callback_data="select_package_large")],
+            [InlineKeyboardButton(text="📊 Мой статус", callback_data="my_status")],
+        ])
+        
+        await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error in /pricing command: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("select_"))
 async def callback_select_product(callback: CallbackQuery):
     """Show payment method selection"""
-    await callback.answer()
-    
-    product = callback.data.replace("select_", "")
-    
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data=f"pay_stars_{product}")],
-        [InlineKeyboardButton(text="💳 Карта (ЮKassa)", callback_data=f"pay_yookassa_{product}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_pricing")],
-    ])
-    
-    if product == "subscription":
-        text = "👑 **Подписка Pro — 299₽**\n\nВыберите способ оплаты:"
-    elif product.startswith("package_"):
-        pkg_type = product.replace("package_", "")
-        from payment_service import PACKAGES
-        pkg = PACKAGES.get(pkg_type, {})
-        text = f"📦 **{pkg.get('name', 'Пакет')} — {pkg.get('rub', 0)}₽**\n\nВыберите способ оплаты:"
-    
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    try:
+        await callback.answer()
+        
+        product = callback.data.replace("select_", "")
+        
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data=f"pay_stars_{product}")],
+            [InlineKeyboardButton(text="💳 Карта (ЮKassa)", callback_data=f"pay_yookassa_{product}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_pricing")],
+        ])
+        
+        if product == "subscription":
+            text = "👑 **Подписка Pro — 299₽**\n\nВыберите способ оплаты:"
+        elif product.startswith("package_"):
+            pkg_type = product.replace("package_", "")
+            from payment_service import PACKAGES
+            pkg = PACKAGES.get(pkg_type, {})
+            text = f"📦 **{pkg.get('name', 'Пакет')} — {pkg.get('rub', 0)}₽**\n\nВыберите способ оплаты:"
+        
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error in callback_select_product: {str(e)}", exc_info=True)
+        await callback.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.callback_query(lambda c: c.data == "back_to_pricing")
 async def callback_back_to_pricing(callback: CallbackQuery):
-    await callback.answer()
-    await cmd_pricing(callback.message)
+    try:
+        await callback.answer()
+        await cmd_pricing(callback.message)
+    except Exception as e:
+        logger.error(f"Error in callback_back_to_pricing: {str(e)}", exc_info=True)
+        await callback.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("pay_stars_"))
 async def callback_pay_stars(callback: CallbackQuery):
     """Process Telegram Stars payment"""
-    await callback.answer()
-    
-    product = callback.data.replace("pay_stars_", "")
-    user_id = callback.from_user.id
-    
-    if product == "subscription":
-        await send_subscription_invoice_stars(callback.bot, callback.message.chat.id)
-    elif product.startswith("package_"):
-        package_type = product.replace("package_", "")
-        await send_package_invoice_stars(callback.bot, callback.message.chat.id, package_type)
+    try:
+        await callback.answer()
+        
+        product = callback.data.replace("pay_stars_", "")
+        user_id = callback.from_user.id
+        
+        if product == "subscription":
+            await send_subscription_invoice_stars(callback.bot, callback.message.chat.id)
+        elif product.startswith("package_"):
+            package_type = product.replace("package_", "")
+            await send_package_invoice_stars(callback.bot, callback.message.chat.id, package_type)
+    except Exception as e:
+        logger.error(f"Error in callback_pay_stars: {str(e)}", exc_info=True)
+        await callback.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("pay_yookassa_"))
 async def callback_pay_yookassa(callback: CallbackQuery):
     """Process YooKassa payment"""
-    await callback.answer()
-    
-    product = callback.data.replace("pay_yookassa_", "")
-    user_id = callback.from_user.id
-    
-    if product == "subscription":
-        await send_subscription_payment_yookassa(callback.bot, callback.message.chat.id, user_id)
-    elif product.startswith("package_"):
-        package_type = product.replace("package_", "")
-        await send_package_payment_yookassa(callback.bot, callback.message.chat.id, user_id, package_type)
+    try:
+        await callback.answer()
+        
+        product = callback.data.replace("pay_yookassa_", "")
+        user_id = callback.from_user.id
+        
+        if product == "subscription":
+            await send_subscription_payment_yookassa(callback.bot, callback.message.chat.id, user_id)
+        elif product.startswith("package_"):
+            package_type = product.replace("package_", "")
+            await send_package_payment_yookassa(callback.bot, callback.message.chat.id, user_id, package_type)
+    except Exception as e:
+        logger.error(f"Error in callback_pay_yookassa: {str(e)}", exc_info=True)
+        await callback.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.callback_query(lambda c: c.data == "my_status")
 async def callback_my_status(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    status_msg = get_user_status_message(user_id)
-    await callback.answer()
-    await callback.message.answer(status_msg, parse_mode="Markdown")
+    try:
+        user_id = callback.from_user.id
+        status_msg = get_user_status_message(user_id)
+        await callback.answer()
+        await callback.message.answer(status_msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error in callback_my_status: {str(e)}", exc_info=True)
+        await callback.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.message(Command("skip"))
 async def cmd_skip(message: Message):
     """Handle /skip command when user doesn't want to add additional information"""
-    user_id = message.from_user.id
-    
-    # Check if user is in photo processing state
-    if user_id in user_states and user_states[user_id]['state'] == 'awaiting_additional_info':
-        # Retrieve stored photo path
-        photo_path = user_states[user_id]['photo_path']
-        
-        try:
-            # Check if user can generate
-            if not update_check_limits(user_id, 'photo'):
-                await message.answer(
-                    "❌ Лимит исчерпан!\n\n"
-                    "У вас использованы все бесплатные анализы фото на сегодня.\n\n"
-                    "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
-                )
-                return
+    try:
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
+            return
 
-            # Generate description based on photo only (no additional info)
-            generating_msg = await message.answer("⏳ Генерирую SEO-описание на основе фото...")
+        user_id = message.from_user.id
+        
+        # Check if user is in photo processing state
+        if user_id in user_states and user_states[user_id]['state'] == 'awaiting_additional_info':
+            # Retrieve stored photo path
+            photo_path = user_states[user_id]['photo_path']
             
-            # Generate description from photo without additional notes
-            description = await generate_description_from_photo(photo_path, "")
-            
-            # Send the generated description
-            await message.answer(f"✅ SEO-описание готово!\n\n{description}")
-            
-            # Clean up user state and temporary file
-            del user_states[user_id]
-            if os.path.exists(photo_path):
-                try:
-                    os.remove(photo_path)
-                except Exception as e:
-                    logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
-            
-            # Update usage after successful generation
-            after_generation(user_id, 'photo')
-            
-            # Get updated stats
-            new_stats = get_usage_stats(user_id)
-            remaining = max(0, 3 - new_stats['single_count'])
-            if remaining > 0:
-                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
-            else:
-                await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
+            try:
+                # Check if user can generate
+                if not update_check_limits(user_id, 'photo'):
+                    await message.answer(
+                        "❌ Лимит исчерпан!\n\n"
+                        "У вас использованы все бесплатные анализы фото на сегодня.\n\n"
+                        "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
+                    )
+                    return
+
+                # Generate description based on photo only (no additional info)
+                generating_msg = await message.answer("⏳ Генерирую SEO-описание на основе фото...")
                 
-            logger.info(f"Generated photo-based description for user {user_id}")
-            
-        except Exception as gen_error:
-            logger.error(f"Error generating photo-based description for user {user_id}: {str(gen_error)}")
-            await message.answer("❌ Ошибка при генерации описания. Пожалуйста, попробуйте снова.")
-            
-            # Clean up in case of error
-            if user_id in user_states:
+                # Generate description from photo without additional notes
+                description = await generate_description_from_photo(photo_path, "")
+                
+                # Send the generated description
+                await message.answer(f"✅ SEO-описание готово!\n\n{description}")
+                
+                # Clean up user state and temporary file
                 del user_states[user_id]
-            if os.path.exists(photo_path):
-                try:
-                    os.remove(photo_path)
-                except Exception as e:
-                    logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
-    else:
-        await message.answer("Команда /skip доступна только при обработке фото. Отправьте фото товара для начала.")
+                if os.path.exists(photo_path):
+                    try:
+                        os.remove(photo_path)
+                    except Exception as e:
+                        logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
+                
+                # Update usage after successful generation
+                after_generation(user_id, 'photo')
+                
+                # Get updated stats
+                new_stats = get_usage_stats(user_id)
+                remaining = max(0, 3 - new_stats['single_count'])
+                if remaining > 0:
+                    await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
+                else:
+                    await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
+                    
+                logger.info(f"Generated photo-based description for user {user_id}")
+                
+            except Exception as gen_error:
+                logger.error(f"Error generating photo-based description for user {user_id}: {str(gen_error)}", exc_info=True)
+                await message.answer("❌ Ошибка при генерации описания. Пожалуйста, попробуйте снова.")
+                
+                # Clean up in case of error
+                if user_id in user_states:
+                    del user_states[user_id]
+                if os.path.exists(photo_path):
+                    try:
+                        os.remove(photo_path)
+                    except Exception as e:
+                        logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
+        else:
+            await message.answer("Команда /skip доступна только при обработке фото. Отправьте фото товара для начала.")
+    except Exception as e:
+        logger.error(f"Error in /skip command: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
     """Handle photo messages (analyze photo and generate SEO description)"""
     try:
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
+            return
+
         user_id = message.from_user.id
         username = message.from_user.username or str(user_id)
         
         # Check if user exists, create if not
-        user = get_user(user_id)
-        if not user:
-            create_user(user_id, username)
+        try:
+            user = get_user(user_id)
+            if not user:
+                create_user(user_id, username)
+        except Exception as db_error:
+            logger.error(f"Database error when checking/creating user {user_id}: {db_error}")
+            await message.answer("⚠️ Произошла ошибка базы данных. Пожалуйста, попробуйте позже.")
+            return
         
         # Check usage limits
         if not update_check_limits(user_id, 'photo'):
@@ -295,91 +514,108 @@ async def handle_photo(message: Message):
             )
             
         except Exception as download_error:
-            logger.error(f"Error downloading photo for user {user_id}: {str(download_error)}")
+            logger.error(f"Error downloading photo for user {user_id}: {str(download_error)}", exc_info=True)
             await message.answer("❌ Ошибка загрузки фото. Пожалуйста, попробуйте снова.")
             
     except Exception as e:
-        logger.error(f"Error handling photo from user {message.from_user.id}: {str(e)}")
-        await message.answer("Произошла ошибка при обработке фото. Пожалуйста, попробуйте снова.")
+        logger.error(f"Error handling photo from user {message.from_user.id}: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.message(F.text & F.func(lambda msg: msg.from_user.id in user_states and user_states[msg.from_user.id]['state'] == 'awaiting_additional_info'))
 async def handle_additional_info(message: Message):
     """Handle additional information provided by user for photo-based description"""
-    user_id = message.from_user.id
-    
-    # Retrieve stored photo path
-    photo_path = user_states[user_id]['photo_path']
-    
     try:
-        # Check if user can generate
-        if not update_check_limits(user_id, 'photo'):
-            await message.answer(
-                "❌ Лимит исчерпан!\n\n"
-                "У вас использованы все бесплатные анализы фото на сегодня.\n\n"
-                "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
-            )
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
             return
 
-        # Get the additional information from user
-        additional_info = message.text
+        user_id = message.from_user.id
         
-        # Generate description based on photo and additional info
-        generating_msg = await message.answer("⏳ Генерирую SEO-описание на основе фото и дополнительной информации...")
+        # Retrieve stored photo path
+        photo_path = user_states[user_id]['photo_path']
         
-        # Generate description from photo with additional notes
-        description = await generate_description_from_photo(photo_path, additional_info)
-        
-        # Send the generated description
-        await message.answer(f"✅ SEO-описание готово!\n\n{description}")
-        
-        # Clean up user state and temporary file
-        del user_states[user_id]
-        
-        if os.path.exists(photo_path):
-            try:
-                os.remove(photo_path)
-            except Exception as e:
-                logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
-        
-        # Update usage after successful generation
-        after_generation(user_id, 'photo')
-        
-        # Get updated stats
-        new_stats = get_usage_stats(user_id)
-        remaining = max(0, 3 - new_stats['single_count'])
-        if remaining > 0:
-            await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
-        else:
-            await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
+        try:
+            # Check if user can generate
+            if not update_check_limits(user_id, 'photo'):
+                await message.answer(
+                    "❌ Лимит исчерпан!\n\n"
+                    "У вас использованы все бесплатные анализы фото на сегодня.\n\n"
+                    "Хотите больше? Используйте /pricing для покупки подписки или пакета!"
+                )
+                return
+
+            # Get the additional information from user
+            additional_info = message.text
             
-        logger.info(f"Generated photo-based description with additional info for user {user_id}")
-        
-    except Exception as gen_error:
-        logger.error(f"Error generating photo-based description for user {user_id}: {str(gen_error)}")
-        await message.answer("❌ Ошибка при генерации описания. Пожалуйста, попробуйте снова.")
-        
-        # Clean up in case of error
-        if user_id in user_states:
+            # Generate description based on photo and additional info
+            generating_msg = await message.answer("⏳ Генерирую SEO-описание на основе фото и дополнительной информации...")
+            
+            # Generate description from photo with additional notes
+            description = await generate_description_from_photo(photo_path, additional_info)
+            
+            # Send the generated description
+            await message.answer(f"✅ SEO-описание готово!\n\n{description}")
+            
+            # Clean up user state and temporary file
             del user_states[user_id]
-        if os.path.exists(photo_path):
-            try:
-                os.remove(photo_path)
-            except Exception as e:
-                logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
+            
+            if os.path.exists(photo_path):
+                try:
+                    os.remove(photo_path)
+                except Exception as e:
+                    logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
+            
+            # Update usage after successful generation
+            after_generation(user_id, 'photo')
+            
+            # Get updated stats
+            new_stats = get_usage_stats(user_id)
+            remaining = max(0, 3 - new_stats['single_count'])
+            if remaining > 0:
+                await message.answer(f"📊 Осталось одиночных генераций: {remaining}/3")
+            else:
+                await message.answer("📊 Вы исчерпали лимит одиночных генераций на этот месяц.")
+                
+            logger.info(f"Generated photo-based description with additional info for user {user_id}")
+            
+        except Exception as gen_error:
+            logger.error(f"Error generating photo-based description for user {user_id}: {str(gen_error)}", exc_info=True)
+            await message.answer("❌ Ошибка при генерации описания. Пожалуйста, попробуйте снова.")
+            
+            # Clean up in case of error
+            if user_id in user_states:
+                del user_states[user_id]
+            if os.path.exists(photo_path):
+                try:
+                    os.remove(photo_path)
+                except Exception as e:
+                    logger.warning(f"Could not remove temp file {photo_path}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error handling additional info from user {message.from_user.id}: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.message(F.text & ~F.document)
 async def handle_text_message(message: Message):
     """Handle text messages (single product description)"""
     try:
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
+            return
+
         user_id = message.from_user.id
         username = message.from_user.username or str(user_id)
         
         # Check if user exists, create if not
-        user = get_user(user_id)
-        if not user:
-            create_user(user_id, username)
+        try:
+            user = get_user(user_id)
+            if not user:
+                create_user(user_id, username)
+        except Exception as db_error:
+            logger.error(f"Database error when checking/creating user {user_id}: {db_error}")
+            await message.answer("⚠️ Произошла ошибка базы данных. Пожалуйста, попробуйте позже.")
+            return
         
         # Check usage limits
         if not update_check_limits(user_id, 'single'):
@@ -424,7 +660,7 @@ async def handle_text_message(message: Message):
             logger.info(f"Generated description for user {user_id}: {product_name[:50]}...")
             
         except Exception as gen_error:
-            logger.error(f"Error generating description for user {user_id}: {str(gen_error)}")
+            logger.error(f"Error generating description for user {user_id}: {str(gen_error)}", exc_info=True)
             await bot.edit_message_text(
                 chat_id=message.chat.id,
                 message_id=thinking_msg.message_id,
@@ -432,21 +668,30 @@ async def handle_text_message(message: Message):
             )
             
     except Exception as e:
-        logger.error(f"Error handling text message from user {message.from_user.id}: {str(e)}")
-        await message.answer("Произошла ошибка при обработке сообщения. Пожалуйста, попробуйте снова.")
+        logger.error(f"Error handling text message from user {message.from_user.id}: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.message(F.document)
 async def handle_document(message: Message):
     """Handle document uploads (Excel/CSV files for batch processing)"""
     try:
+        # Rate limiting check
+        if not await check_rate_limit(message.from_user.id):
+            return
+
         user_id = message.from_user.id
         username = message.from_user.username or str(user_id)
         
         # Check if user exists, create if not
-        user = get_user(user_id)
-        if not user:
-            create_user(user_id, username)
+        try:
+            user = get_user(user_id)
+            if not user:
+                create_user(user_id, username)
+        except Exception as db_error:
+            logger.error(f"Database error when checking/creating user {user_id}: {db_error}")
+            await message.answer("⚠️ Произошла ошибка базы данных. Пожалуйста, попробуйте позже.")
+            return
         
         # Check batch usage limits
         if not update_check_limits(user_id, 'batch'):
@@ -524,14 +769,14 @@ async def handle_document(message: Message):
                     await message.answer("❌ Ошибка при отправке файла. Файл слишком большой или поврежден.")
                     
             except ValueError as ve:
-                logger.error(f"ValueError in file processing for user {user_id}: {str(ve)}")
+                logger.error(f"ValueError in file processing for user {user_id}: {str(ve)}", exc_info=True)
                 await bot.edit_message_text(
                     chat_id=message.chat.id,
                     message_id=processing_msg.message_id,
                     text=f"❌ Ошибка обработки файла: {str(ve)}"
                 )
             except Exception as e:
-                logger.error(f"Error in file processing for user {user_id}: {str(e)}")
+                logger.error(f"Error in file processing for user {user_id}: {str(e)}", exc_info=True)
                 await bot.edit_message_text(
                     chat_id=message.chat.id,
                     message_id=processing_msg.message_id,
@@ -539,7 +784,7 @@ async def handle_document(message: Message):
                 )
                 
         except Exception as download_error:
-            logger.error(f"Error downloading file for user {user_id}: {str(download_error)}")
+            logger.error(f"Error downloading file for user {user_id}: {str(download_error)}", exc_info=True)
             await message.answer("❌ Ошибка загрузки файла. Пожалуйста, попробуйте снова.")
             
         finally:
@@ -562,28 +807,51 @@ async def handle_document(message: Message):
                         logger.warning(f"Could not remove output file {file}: {str(cleanup_error)}")
                         
     except Exception as e:
-        logger.error(f"Error handling document from user {message.from_user.id}: {str(e)}")
-        await message.answer("Произошла ошибка при обработке файла. Пожалуйста, попробуйте снова.")
+        logger.error(f"Error handling document from user {message.from_user.id}: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку.")
 
 
 @dp.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
     """Answer pre-checkout query (required by Telegram)"""
-    await pre_checkout_query.bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+    try:
+        await pre_checkout_query.bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+    except Exception as e:
+        logger.error(f"Error in pre-checkout query: {str(e)}", exc_info=True)
 
 
 @dp.message(F.successful_payment)
 async def process_successful_stars_payment_handler(message: Message):
     """Handle successful Telegram Stars payment"""
-    payment = message.successful_payment
-    user_id = message.from_user.id
-    payload = payment.invoice_payload
-    payment_id = payment.telegram_payment_charge_id
+    try:
+        payment = message.successful_payment
+        user_id = message.from_user.id
+        payload = payment.invoice_payload
+        payment_id = payment.telegram_payment_charge_id
+        
+        logger.info(f"Successful Stars payment from user {user_id}: payload={payload}, id={payment_id}")
+        
+        result_message = await process_successful_stars_payment(payload, payment_id, user_id)
+        await message.answer(result_message, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error in successful payment handler: {str(e)}", exc_info=True)
+        await message.answer("⚠️ Произошла ошибка обработки платежа. Пожалуйста, обратитесь в поддержку.")
+
+
+@dp.errors()
+async def errors_handler(update: Update, exception: Exception):
+    logger.error(f"Error handling update {getattr(update, 'update_id', 'unknown')}: {exception}", exc_info=True)
     
-    logger.info(f"Successful Stars payment from user {user_id}: payload={payload}, id={payment_id}")
+    # Send user-friendly message
+    if hasattr(update, 'message') and update.message:
+        try:
+            await update.message.answer(
+                "⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку."
+            )
+        except Exception:
+            pass  # If we can't send message to user, just log the error
     
-    result_message = await process_successful_stars_payment(payload, payment_id, user_id)
-    await message.answer(result_message, parse_mode="Markdown")
+    return True
 
 
 async def main():
@@ -594,7 +862,7 @@ async def main():
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
-        logger.error(f"Error running bot: {str(e)}")
+        logger.error(f"Error running bot: {str(e)}", exc_info=True)
     finally:
         await bot.session.close()
         logger.info("Bot session closed")
