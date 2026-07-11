@@ -4,15 +4,14 @@ import tempfile
 import os
 import json
 import base64
+import aiohttp
 from pathlib import Path
-from openai import OpenAI
-from config import OPENROUTER_API_KEY, AI_MODEL, VISION_MODEL, SYSTEM_PROMPT, FALLBACK_MODELS
+from config import SYSTEM_PROMPT
 
-# Initialize OpenRouter client
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
+# Models
+MODELS = [
+    "openrouter/free",  # Автоматический выбор бесплатной модели от OpenRouter
+]
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +49,18 @@ async def analyze_product_photo(image_path: str) -> dict:
 }
 
 Отвечай ТОЛЬКО JSON, без дополнительного текста."""
+
+    # Using OpenRouter API for vision model
+    from config import OPENROUTER_API_KEY
+    
+    OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://your-bot-url.com",  # Optional
+        "X-Title": "AI SellerBro Bot"  # Optional
+    }
     
     messages = [
         {
@@ -61,76 +72,36 @@ async def analyze_product_photo(image_path: str) -> dict:
         }
     ]
     
-    try:
-        # Try the larger vision model first, fall back to smaller one if unavailable
-        try:
-            response = client.chat_completion(
-                messages=messages,
-                model="Qwen/Qwen2.5-VL-72B-Instruct",
-                max_tokens=1000,
-                temperature=0.3  # Low temperature for accurate analysis
-            )
-        except Exception as e:
-            logger.warning(f"Larger vision model not available: {str(e)}. Trying smaller model.")
-            # Fallback to a smaller vision model
-            response = client.chat_completion(
-                messages=messages,
-                model="Qwen/Qwen2-VL-7B-Instruct",
-                max_tokens=1000,
-                temperature=0.3  # Low temperature for accurate analysis
-            )
-        
-        if response and response.choices:
-            raw_text = response.choices[0].message.content.strip()
-            # Try to parse JSON
-            try:
-                # Try to extract JSON if wrapped in code
-                if "```" in raw_text:
-                    raw_text = raw_text.split("```")[1]
-                    if raw_text.startswith("json"):
-                        raw_text = raw_text[4:]
-                analysis = json.loads(raw_text)
-                logger.info(f"Vision analysis: {analysis}")
-                return analysis
-            except json.JSONDecodeError:
-                logger.warning(f"Could not parse JSON, using raw text: {raw_text}")
-                return {"raw_analysis": raw_text}
-        
-        return {}
-        
-    except Exception as e:
-        logger.error(f"Error in vision analysis: {str(e)}")
-        return {}
-
-
-async def generate_description(product_name: str) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Создай SEO-описание для товара: {product_name}"}
-    ]
+    payload = {
+        "model": "openrouter/free",  # Using automatic router
+        "messages": messages,
+        "max_tokens": 1000,
+        "temperature": 0.3  # Low temperature for accurate analysis
+    }
     
-    # Try main model first, then fallbacks
-    models_to_try = [AI_MODEL] + FALLBACK_MODELS
-    
-    for model_name in models_to_try:
-        try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                max_tokens=1000,
-                temperature=0.7,
-            )
-            
-            if response and response.choices and len(response.choices) > 0:
-                description = response.choices[0].message.content.strip()
-                logger.info(f"Successfully generated with model: {model_name}")
-                return description
-        except Exception as e:
-            logger.warning(f"Model {model_name} failed: {str(e)[:100]}, trying next...")
-            await asyncio.sleep(2)
-            continue
-    
-    raise Exception("All models failed. Please try again later.")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
+            if response.status == 200:
+                data = await response.json()
+                raw_text = data["choices"][0]["message"]["content"].strip()
+                
+                # Try to parse JSON
+                try:
+                    # Try to extract JSON if wrapped in markdown
+                    if "```" in raw_text:
+                        raw_text = raw_text.split("```")[1]
+                        if raw_text.startswith("json"):
+                            raw_text = raw_text[4:]
+                    analysis = json.loads(raw_text)
+                    logger.info(f"Vision analysis: {analysis}")
+                    return analysis
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not parse JSON, using raw text: {raw_text}")
+                    return {"raw_analysis": raw_text}
+            else:
+                error_text = await response.text()
+                logger.error(f"Vision analysis error: {response.status} - {error_text}")
+                return {}
 
 
 async def generate_description_from_photo(image_path: str, user_notes: str = "") -> str:
@@ -146,7 +117,7 @@ async def generate_description_from_photo(image_path: str, user_notes: str = "")
         raise Exception("Не удалось проанализировать фото")
     
     # Step 2: Create SEO description based on REAL characteristics
-    client = InferenceClient(token=HF_TOKEN)
+    from config import OPENROUTER_API_KEY
     
     analysis_text = json.dumps(photo_analysis, ensure_ascii=False, indent=2) if photo_analysis else "Нет данных"
     
@@ -175,33 +146,78 @@ async def generate_description_from_photo(image_path: str, user_notes: str = "")
 - Указывать бренд, если он не виден на фото или не указан продавцом
 - Придумывать несуществующие функции"""
     
+    OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://your-bot-url.com",  # Optional
+        "X-Title": "AI SellerBro Bot"  # Optional
+    }
+    
     messages = [
         {"role": "system", "content": seo_system_prompt},
         {"role": "user", "content": "Создай SEO-описание для этого товара на основе анализа фото"}
     ]
     
-    # Try main model first, then fallbacks
-    models_to_try = ["Qwen/Qwen2.5-7B-Instruct", "Qwen/Qwen2-VL-7B-Instruct", "microsoft/DialoGPT-medium"]
+    payload = {
+        "model": "openrouter/free",  # Using automatic router
+        "messages": messages,
+        "max_tokens": 800,
+        "temperature": 0.7
+    }
     
-    for model_name in models_to_try:
-        try:
-            response = client.chat_completion(
-                messages=messages,
-                model=model_name,
-                max_tokens=800,
-                temperature=0.7
-            )
-            
-            if response and response.choices:
-                description = response.choices[0].message.content.strip()
-                logger.info(f"Successfully generated photo description with model: {model_name}")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
+            if response.status == 200:
+                data = await response.json()
+                description = data["choices"][0]["message"]["content"].strip()
+                logger.info(f"Generated photo-based description: {description[:100]}...")
                 return description
-        except Exception as e:
-            logger.warning(f"Photo model {model_name} failed: {str(e)[:100]}, trying next...")
-            await asyncio.sleep(2)
-            continue
+            else:
+                error_text = await response.text()
+                raise Exception(f"Photo description generation error: {response.status} - {error_text}")
+
+
+async def generate_description(product_name: str) -> str:
+    """
+    Генерирует описание товара через OpenRouter API
+    """
+    from config import OPENROUTER_API_KEY
     
-    raise Exception("All photo models failed. Please try again later.")
+    OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://your-bot-url.com",  # Опционально
+        "X-Title": "AI SellerBro Bot"  # Опционально
+    }
+    
+    payload = {
+        "model": "openrouter/free",  # Используем автоматический роутер
+        "messages": [
+            {
+                "role": "system",
+                "content": "Ты - профессиональный копирайтер для маркетплейсов. Создавай привлекательные описания товаров."
+            },
+            {
+                "role": "user",
+                "content": f"Создай привлекательное описание для товара: {product_name}"
+            }
+        ],
+        "temperature": 0.7,
+        "max_tokens": 500
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data["choices"][0]["message"]["content"]
+            else:
+                error_text = await response.text()
+                raise Exception(f"OpenRouter API error: {response.status} - {error_text}")
 
 
 async def generate_batch_descriptions(products: list[str]) -> list[str]:
