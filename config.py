@@ -26,7 +26,7 @@ FALLBACK_MODELS = [
 ]
 
 # Vision model
-VISION_MODEL = "google/gemini-2.0-flash-exp:free"
+VISION_MODEL = "meta-llama/llama-3.2-11b-vision-instruct:free"
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")

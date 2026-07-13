@@ -6,7 +6,7 @@ import json
 import base64
 import aiohttp
 from pathlib import Path
-from config import SYSTEM_PROMPT
+from config import SYSTEM_PROMPT, VISION_MODEL, AI_MODEL
 
 # Models
 MODELS = [
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 async def analyze_product_photo(image_path: str) -> dict:
-    """Analyze product photo using Qwen2.5-VL vision model.
+    """Analyze product photo using Qwen2.5 vision model.
     Returns dict with real characteristics visible in the photo.
     """
     # Read image and encode as base64
@@ -73,35 +73,48 @@ async def analyze_product_photo(image_path: str) -> dict:
     ]
     
     payload = {
-        "model": "openrouter/free",  # Using automatic router
+        "model": VISION_MODEL,  # Using the new stable vision model
         "messages": messages,
         "max_tokens": 1000,
         "temperature": 0.3  # Low temperature for accurate analysis
     }
     
-    async with aiohttp.ClientSession() as session:
-        async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
-            if response.status == 200:
-                data = await response.json()
-                raw_text = data["choices"][0]["message"]["content"].strip()
-                
-                # Try to parse JSON
-                try:
-                    # Try to extract JSON if wrapped in markdown
-                    if "```" in raw_text:
-                        raw_text = raw_text.split("```")[1]
-                        if raw_text.startswith("json"):
-                            raw_text = raw_text[4:]
-                    analysis = json.loads(raw_text)
-                    logger.info(f"Vision analysis: {analysis}")
-                    return analysis
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not parse JSON, using raw text: {raw_text}")
-                    return {"raw_analysis": raw_text}
-            else:
-                error_text = await response.text()
-                logger.error(f"Vision analysis error: {response.status} - {error_text}")
-                return {}
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        raw_text = data["choices"][0]["message"]["content"].strip()
+                        
+                        # Try to parse JSON
+                        try:
+                            # Try to extract JSON if wrapped in markdown
+                            if "```" in raw_text:
+                                raw_text = raw_text.split("```")[1]
+                                if raw_text.startswith("json"):
+                                    raw_text = raw_text[4:]
+                            analysis = json.loads(raw_text)
+                            logger.info(f"Vision analysis: {analysis}")
+                            return analysis
+                        except json.JSONDecodeError:
+                            logger.warning(f"Could not parse JSON, using raw text: {raw_text}")
+                            return {"raw_analysis": raw_text}
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Vision analysis error: {response.status} - {error_text}")
+                        if attempt == max_retries - 1:
+                            raise Exception(f"Vision model failed after {max_retries} attempts: {response.status} - {error_text}")
+                        await asyncio.sleep(2)  # Wait before retry
+        except Exception as e:
+            logger.error(f"Error during vision analysis (attempt {attempt + 1}): {str(e)}")
+            if attempt == max_retries - 1:
+                raise Exception(f"Не удалось проанализировать фото после {max_retries} попыток: {str(e)}")
+            await asyncio.sleep(2)  # Wait before retry
+    
+    # If all retries fail, raise an exception
+    raise Exception("Не удалось проанализировать фото")
 
 
 async def generate_description_from_photo(image_path: str, user_notes: str = "") -> str:
@@ -138,7 +151,7 @@ async def generate_description_from_photo(image_path: str, user_notes: str = "")
 2. Использовать ТОЛЬКО характеристики из анализа
 3. Добавить места для заполнения: [укажите размер], [укажите бренд], [укажите цену]
 4. Использовать структуру с эмодзи как раньше (крючок, преимущества, характеристики, уход, бонусы)
-5. Включить SEO-ключевые слова естественно
+4. Включить SEO-ключевые слова естественно
 
 СТРОГО ЗАПРЕЩЕНО:
 - Придумывать размеры, которых нет в анализе
@@ -167,21 +180,38 @@ async def generate_description_from_photo(image_path: str, user_notes: str = "")
         "temperature": 0.7
     }
     
-    async with aiohttp.ClientSession() as session:
-        async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
-            if response.status == 200:
-                data = await response.json()
-                description = data["choices"][0]["message"]["content"].strip()
-                logger.info(f"Generated photo-based description: {description[:100]}...")
-                return description
-            else:
-                error_text = await response.text()
-                raise Exception(f"Photo description generation error: {response.status} - {error_text}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        description = data["choices"][0]["message"]["content"].strip()
+                        
+                        # STRICT VALIDATION: Ensure content is not None or empty
+                        if not description or not isinstance(description, str) or len(description.strip()) == 0:
+                            logger.error(f"Vision description API returned empty or None content. Raw data: {data}")
+                            raise Exception("Модель вернула пустой ответ. Попробуйте еще раз.")
+                        
+                        logger.info(f"Generated photo-based description: {description[:100]}...")
+                        return description
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Photo description generation error (attempt {attempt + 1}): {response.status} - {error_text}")
+                        if attempt == max_retries - 1:
+                            raise Exception(f"Photo description generation error: {response.status} - {error_text}")
+                        await asyncio.sleep(2)  # Wait before retry
+        except Exception as e:
+            logger.error(f"Error during photo description generation (attempt {attempt + 1}): {str(e)}")
+            if attempt == max_retries - 1:
+                raise Exception(f"Не удалось сгенерировать описание на основе фото после {max_retries} попыток: {str(e)}")
+            await asyncio.sleep(2)  # Wait before retry
 
 
 async def generate_description(product_name: str) -> str:
     """
-    Генерирует описание товара через OpenRouter API
+    Генерирует описание товара через OpenRouter API с строгой валидацией
     """
     from config import OPENROUTER_API_KEY
     
@@ -195,29 +225,49 @@ async def generate_description(product_name: str) -> str:
     }
     
     payload = {
-        "model": "openrouter/free",  # Используем автоматический роутер
+        "model": AI_MODEL,  # Using the configured AI model
         "messages": [
             {
                 "role": "system",
-                "content": "Ты - профессиональный копирайтер для маркетплейсов. Создавай привлекательные описания товаров."
+                "content": SYSTEM_PROMPT
             },
             {
                 "role": "user",
-                "content": f"Создай привлекательное описание для товара: {product_name}"
+                "content": f"Создай SEO-описание для товара: {product_name}"
             }
         ],
         "temperature": 0.7,
-        "max_tokens": 500
+        "max_tokens": 1000
     }
     
-    async with aiohttp.ClientSession() as session:
-        async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
-            if response.status == 200:
-                data = await response.json()
-                return data["choices"][0]["message"]["content"]
-            else:
-                error_text = await response.text()
-                raise Exception(f"OpenRouter API error: {response.status} - {error_text}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        content = data["choices"][0]["message"]["content"]
+                        
+                        # STRICT VALIDATION: Ensure content is not None or empty
+                        if not content or not isinstance(content, str) or len(content.strip()) == 0:
+                            logger.error(f"API returned empty or None content. Full response: {data}")
+                            raise Exception("Модель вернула пустой ответ. Попробуйте еще раз.")
+                        
+                        description = content.strip()
+                        logger.info(f"Successfully generated description for: {product_name[:30]}...")
+                        return description
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Text description generation error (attempt {attempt + 1}): {response.status} - {error_text}")
+                        if attempt == max_retries - 1:
+                            raise Exception(f"Text description generation error: {response.status} - {error_text}")
+                        await asyncio.sleep(2)  # Wait before retry
+        except Exception as e:
+            logger.error(f"Error during OpenRouter API call (attempt {attempt + 1}): {str(e)}")
+            if attempt == max_retries - 1:
+                raise Exception(f"Не удалось сгенерировать описание после {max_retries} попыток: {str(e)}")
+            await asyncio.sleep(2) # Wait before retry
 
 
 async def generate_batch_descriptions(products: list[str]) -> list[str]:
