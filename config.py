@@ -14,19 +14,22 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY environment variable is required")
 
-# Models
-# Main model - stable and fast
-AI_MODEL = "meta-llama/llama-3.1-8b-instruct"
-
-# Fallback models in order of preference
-FALLBACK_MODELS = [
-    "google/gemma-2-9b-it",
-    "mistralai/mistral-7b-instruct",
-    "huggingfaceh4/zephyr-7b-beta",
+# Primary and fallback FREE models for text generation
+FREE_TEXT_MODELS = [
+    "google/gemma-2-9b-it:free",
+    "meta-llama/llama-3-8b-instruct:free",
+    "mistralai/mistral-7b-instruct:free"
 ]
 
-# Vision model
-VISION_MODEL = "meta-llama/llama-3.2-11b-vision-instruct"
+# Primary and fallback FREE models for vision/photo analysis
+FREE_VISION_MODELS = [
+    "qwen/qwen-2-vl-7b-instruct:free",
+    "meta-llama/llama-3.2-11b-vision-instruct:free"
+]
+
+# Keep the single model variables for backward compatibility, pointing to the first in the list
+AI_MODEL = FREE_TEXT_MODELS[0]
+VISION_MODEL = FREE_VISION_MODELS[0]
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")

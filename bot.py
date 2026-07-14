@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.chat_action import ChatActionSender
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, FREE_TEXT_MODELS, FREE_VISION_MODELS
 from database import get_user, create_user, get_usage_stats, increment_single_usage, increment_batch_usage, check_limits, update_check_limits, after_generation, get_user_status_message
 from ai_service import generate_description, generate_description_from_photo, analyze_product_photo
 from batch_processor import process_excel_file

@@ -4,10 +4,11 @@ import tempfile
 import os
 import json
 import base64
+import aiohttp
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from openai import OpenAI
-from config import SYSTEM_PROMPT, VISION_MODEL, AI_MODEL, OPENROUTER_API_KEY
+from config import SYSTEM_PROMPT, VISION_MODEL, AI_MODEL, FREE_TEXT_MODELS, FREE_VISION_MODELS, OPENROUTER_API_KEY
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,7 +19,7 @@ client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_
 
 
 async def analyze_product_photo(image_path: str) -> Dict[str, Any]:
-    """Analyze product photo using Qwen2.5 vision model.
+    """Analyze product photo using vision model with fallback chain.
     Returns dict with real characteristics visible in the photo.
     """
     # Read image and encode as base64
@@ -60,11 +61,12 @@ async def analyze_product_photo(image_path: str) -> Dict[str, Any]:
         }
     ]
 
-    max_retries = 3
-    for attempt in range(max_retries):
+    # Try each free vision model in the fallback chain
+    for model in FREE_VISION_MODELS:
         try:
+            logger.info(f"Attempting vision analysis with free model: {model}")
             response = client.chat.completions.create(
-                model=VISION_MODEL,  # Using the new stable vision model
+                model=model,
                 messages=messages,
                 max_tokens=1000,
                 temperature=0.3  # Low temperature for accurate analysis
@@ -77,8 +79,8 @@ async def analyze_product_photo(image_path: str) -> Dict[str, Any]:
 
                 # STRICT VALIDATION: Ensure content is not None or empty
                 if not raw_text or not isinstance(raw_text, str) or len(raw_text.strip()) == 0:
-                    logger.error(f"Vision API returned empty or None content. Full response: {response}")
-                    raise Exception("Модель зрения вернула пустой ответ. Попробуйте еще раз.")
+                    logger.warning(f"Vision model {model} returned empty content. Trying next...")
+                    continue  # Try next model in the list
 
                 # Try to parse JSON
                 try:
@@ -94,16 +96,20 @@ async def analyze_product_photo(image_path: str) -> Dict[str, Any]:
                     logger.warning(f"Could not parse JSON, using raw text: {raw_text}")
                     return {"raw_analysis": raw_text}
             else:
-                raise Exception("No choices in vision API response")
+                logger.warning(f"No choices in response from vision model {model}. Trying next...")
+                continue
 
         except Exception as e:
-            logger.error(f"Error during vision analysis (attempt {attempt + 1}): {str(e)}")
-            if attempt == max_retries - 1:
-                raise Exception(f"Не удалось проанализировать фото после {max_retries} попыток: {str(e)}")
-            await asyncio.sleep(2)  # Wait before retry
+            error_msg = str(e)
+            if "404" in error_msg or "unavailable" in error_msg.lower() or "rate limit" in error_msg.lower():
+                logger.warning(f"Vision model {model} failed ({error_msg[:50]}...). Trying next free model...")
+                continue  # Move to the next model in the FREE_VISION_MODELS list
+            else:
+                logger.error(f"Unexpected error with vision {model}: {error_msg}")
+                raise  # If it's a real error (like bad API key), stop trying
 
-    # If all retries fail, raise an exception
-    raise Exception("Не удалось проанализировать фото")
+    # If all free vision models failed
+    raise Exception("Все бесплатные модели зрения временно недоступны или перегружены. Попробуйте через минуту.")
 
 
 async def generate_description_from_photo(image_path: str, user_notes: str = "") -> str:
@@ -151,11 +157,12 @@ async def generate_description_from_photo(image_path: str, user_notes: str = "")
         {"role": "user", "content": "Создай SEO-описание для этого товара на основе анализа фото"}
     ]
 
-    max_retries = 3
-    for attempt in range(max_retries):
+    # Try each free model in the fallback chain
+    for model in FREE_TEXT_MODELS:
         try:
+            logger.info(f"Attempting photo description generation with free model: {model}")
             response = client.chat.completions.create(
-                model="openrouter/free",  # Using automatic router
+                model=model,
                 messages=messages,
                 max_tokens=800,
                 temperature=0.7
@@ -166,23 +173,31 @@ async def generate_description_from_photo(image_path: str, user_notes: str = "")
 
                 # STRICT VALIDATION: Ensure content is not None or empty
                 if not description or not isinstance(description, str) or len(description.strip()) == 0:
-                    logger.error(f"Vision description API returned empty or None content. Response: {response}")
-                    raise Exception("Модель вернула пустой ответ. Попробуйте еще раз.")
+                    logger.warning(f"Photo description model {model} returned empty content. Trying next...")
+                    continue  # Try next model in the list
 
                 logger.info(f"Generated photo-based description: {description[:100]}...")
                 return description
             else:
-                raise Exception("No choices in photo description API response")
+                logger.warning(f"No choices in photo description from model {model}. Trying next...")
+                continue
 
         except Exception as e:
-            logger.error(f"Error during photo description generation (attempt {attempt + 1}): {str(e)}")
-            if attempt == max_retries - 1:
-                raise Exception(f"Не удалось сгенерировать описание на основе фото после {max_retries} попыток: {str(e)}")
-            await asyncio.sleep(2)  # Wait before retry
+            error_msg = str(e)
+            if "404" in error_msg or "unavailable" in error_msg.lower() or "rate limit" in error_msg.lower():
+                logger.warning(f"Photo description model {model} failed ({error_msg[:50]}...). Trying next free model...")
+                continue  # Move to the next model in the FREE_TEXT_MODELS list
+            else:
+                logger.error(f"Unexpected error with photo description {model}: {error_msg}")
+                raise  # If it's a real error (like bad API key), stop trying
+
+    # If all free models failed
+    raise Exception("Все бесплатные модели временно недоступны или перегружены. Попробуйте через минуту.")
+
 
 async def generate_description(product_name: str) -> str:
     """
-    Генерирует описание товара через OpenRouter API с строгой валидацией
+    Генерирует описание товара через OpenRouter API с fallback chain для бесплатных моделей
     """
     messages = [
         {
@@ -195,11 +210,12 @@ async def generate_description(product_name: str) -> str:
         }
     ]
 
-    max_retries = 3
-    for attempt in range(max_retries):
+    # Try each free model in the fallback chain
+    for model in FREE_TEXT_MODELS:
         try:
+            logger.info(f"Attempting text generation with free model: {model}")
             response = client.chat.completions.create(
-                model=AI_MODEL,  # Using the configured AI model
+                model=model,
                 messages=messages,
                 max_tokens=1000,
                 temperature=0.7
@@ -212,20 +228,26 @@ async def generate_description(product_name: str) -> str:
 
                 # STRICT VALIDATION: Ensure content is not None or empty
                 if not content or not isinstance(content, str) or len(content.strip()) == 0:
-                    logger.error(f"API returned empty or None content. Full response: {response}")
-                    raise Exception("Модель вернула пустой ответ. Попробуйте еще раз.")
+                    logger.warning(f"Model {model} returned empty content. Trying next...")
+                    continue  # Try next model in the list
 
-                description = content.strip()
-                logger.info(f"Successfully generated description for: {product_name[:30]}...")
-                return description
+                logger.info(f"Successfully generated description using {model}")
+                return content.strip()
             else:
-                raise Exception("No choices in API response")
+                logger.warning(f"No choices in response from model {model}. Trying next...")
+                continue
 
         except Exception as e:
-            logger.error(f"Error during OpenRouter API call (attempt {attempt + 1}): {str(e)}")
-            if attempt == max_retries - 1:
-                raise Exception(f"Не удалось сгенерировать описание после {max_retries} попыток: {str(e)}")
-            await asyncio.sleep(2)  # Wait before retry
+            error_msg = str(e)
+            if "404" in error_msg or "unavailable" in error_msg.lower() or "rate limit" in error_msg.lower():
+                logger.warning(f"Model {model} failed ({error_msg[:50]}...). Trying next free model...")
+                continue  # Move to the next model in the FREE_TEXT_MODELS list
+            else:
+                logger.error(f"Unexpected error with {model}: {error_msg}")
+                raise  # If it's a real error (like bad API key), stop trying
+
+    # If all free models failed
+    raise Exception("Все бесплатные модели временно недоступны или перегружены. Попробуйте через минуту.")
 
 
 async def generate_batch_descriptions(products: list[str]) -> list[str]:
