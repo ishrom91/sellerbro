@@ -3,12 +3,12 @@ import logging
 import tempfile
 import os
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, cast
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, FSInputFile, PreCheckoutQuery, Update
+from aiogram.types import Message, FSInputFile, PreCheckoutQuery, Update, CallbackQuery, User
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery
+from aiogram.utils.chat_action import ChatActionSender
 
 from config import BOT_TOKEN
 from database import get_user, create_user, get_usage_stats, increment_single_usage, increment_batch_usage, check_limits, update_check_limits, after_generation, get_user_status_message
@@ -35,7 +35,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # Simple rate limiter
-user_last_message = {}
+user_last_message: Dict[int, float] = {}
 
 async def check_rate_limit(user_id: int, min_interval: int = 2) -> bool:
     """Check if user is sending messages too frequently"""
@@ -47,18 +47,23 @@ async def check_rate_limit(user_id: int, min_interval: int = 2) -> bool:
     return True
 
 # Dictionary to store user states for photo processing
-user_states = {}
+user_states: Dict[int, Dict[str, Any]] = {}
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message) -> None:
     """Handle /start command"""
     try:
+        # Get user object with proper type casting
+        user = message.from_user
+        if not user:
+            return
+        
         # Rate limiting check
-        if not await check_rate_limit(message.from_user.id):
+        if not await check_rate_limit(user.id):
             return
 
-        user_id = message.from_user.id
-        username = message.from_user.username or str(user_id)
+        user_id = user.id
+        username = user.username or str(user_id)
         
         # Check if user exists, create if not
         try:
@@ -111,10 +116,16 @@ async def cmd_start(message: Message):
 
 
 @dp.message(Command("terms"))
-async def cmd_terms(message: Message):
+async def cmd_terms(message: Message) -> None:
+    """Handle /terms command"""
     try:
+        # Get user object with proper type casting
+        user = message.from_user
+        if not user:
+            return
+            
         # Rate limiting check
-        if not await check_rate_limit(message.from_user.id):
+        if not await check_rate_limit(user.id):
             return
 
         terms_text = """
@@ -153,10 +164,16 @@ async def cmd_terms(message: Message):
 
 
 @dp.message(Command("privacy"))
-async def cmd_privacy(message: Message):
+async def cmd_privacy(message: Message) -> None:
+    """Handle /privacy command"""
     try:
+        # Get user object with proper type casting
+        user = message.from_user
+        if not user:
+            return
+            
         # Rate limiting check
-        if not await check_rate_limit(message.from_user.id):
+        if not await check_rate_limit(user.id):
             return
 
         privacy_text = """
@@ -257,11 +274,16 @@ async def cmd_support(message: Message):
 
 
 @dp.message(Command("pricing"))
-async def cmd_pricing(message: Message):
+async def cmd_pricing(message: Message) -> None:
     """Show pricing and tariff plans"""
     try:
+        # Get user object with proper type casting
+        user = message.from_user
+        if not user:
+            return
+            
         # Rate limiting check
-        if not await check_rate_limit(message.from_user.id):
+        if not await check_rate_limit(user.id):
             return
 
         text = (
@@ -463,15 +485,20 @@ async def cmd_skip(message: Message):
 
 
 @dp.message(F.photo)
-async def handle_photo(message: Message):
+async def handle_photo(message: Message) -> None:
     """Handle photo messages (analyze photo and generate SEO description)"""
     try:
+        # Get user object with proper type casting
+        user = message.from_user
+        if not user:
+            return
+            
         # Rate limiting check
-        if not await check_rate_limit(message.from_user.id):
+        if not await check_rate_limit(user.id):
             return
 
-        user_id = message.from_user.id
-        username = message.from_user.username or str(user_id)
+        user_id = user.id
+        username = user.username or str(user_id)
         
         # Check if user exists, create if not
         try:
@@ -597,15 +624,20 @@ async def handle_additional_info(message: Message):
 
 
 @dp.message(F.text & ~F.document)
-async def handle_text_message(message: Message):
+async def handle_text_message(message: Message) -> None:
     """Handle text messages (single product description)"""
     try:
+        # Get user object with proper type casting
+        user = message.from_user
+        if not user:
+            return
+            
         # Rate limiting check
-        if not await check_rate_limit(message.from_user.id):
+        if not await check_rate_limit(user.id):
             return
 
-        user_id = message.from_user.id
-        username = message.from_user.username or str(user_id)
+        user_id = user.id
+        username = user.username or str(user_id)
         
         # Check if user exists, create if not
         try:
@@ -673,15 +705,20 @@ async def handle_text_message(message: Message):
 
 
 @dp.message(F.document)
-async def handle_document(message: Message):
+async def handle_document(message: Message) -> None:
     """Handle document uploads (Excel/CSV files for batch processing)"""
     try:
+        # Get user object with proper type casting
+        user = message.from_user
+        if not user:
+            return
+            
         # Rate limiting check
-        if not await check_rate_limit(message.from_user.id):
+        if not await check_rate_limit(user.id):
             return
 
-        user_id = message.from_user.id
-        username = message.from_user.username or str(user_id)
+        user_id = user.id
+        username = user.username or str(user_id)
         
         # Check if user exists, create if not
         try:
@@ -839,26 +876,31 @@ async def process_successful_stars_payment_handler(message: Message):
 
 
 @dp.errors()
-async def errors_handler(update: Update, exception: Exception):
-    logger.error(f"Error handling update {getattr(update, 'update_id', 'unknown')}: {exception}", exc_info=True)
+async def errors_handler(update: Update, exception: Exception) -> bool:
+    """Global error handler to prevent bot crashes"""
+    logger.error(f"Global error caught: {exception}", exc_info=True)
     
-    # Send user-friendly message
-    if hasattr(update, 'message') and update.message:
-        try:
+    try:
+        if update.message:
             await update.message.answer(
-                "⚠️ Произошла техническая ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку."
+                "⚠️ Произошла техническая ошибка на сервере. Пожалуйста, попробуйте еще раз через минуту.\n"
+                "Если ошибка повторяется, напишите в поддержку: @is_roman"
             )
-        except Exception:
-            pass  # If we can't send message to user, just log the error
+        elif update.callback_query:
+            await update.callback_query.answer("⚠️ Техническая ошибка. Попробуйте позже.", show_alert=True)
+    except Exception as e:
+        logger.error(f"Failed to send error message to user: {e}")
     
     return True
 
 
-async def main():
+async def main() -> None:
     """Main function to run the bot"""
     logger.info("Starting bot...")
     try:
-        await dp.start_polling(bot)
+        # Use async context manager for better resource management
+        async with bot:
+            await dp.start_polling(bot)
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:

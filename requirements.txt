@@ -1,9 +1,8 @@
 aiogram==3.4.1
 pandas
 openpyxl
+openai
 httpx
 supabase==2.5.0
 python-dotenv==1.0.1
-openai
-yookassa
-pillow
+aiohttp

@@ -3,7 +3,8 @@ import logging
 import pandas as pd
 import os
 import tempfile
-from typing import Tuple, List
+import gc
+from typing import Tuple, List, Optional, Dict, Any
 from datetime import datetime
 from ai_service import generate_batch_descriptions, generate_description
 
@@ -86,6 +87,9 @@ async def process_excel_file(file_path: str, user_id: int) -> Tuple[str, List[st
         # Ensure we have a final progress message
         if total_items % 5 != 0:
             progress_messages.append(get_progress_messages(total_items, total_items))
+        
+        # Garbage collection to free up RAM and prevent OOM crashes
+        gc.collect()
         
         return output_path, progress_messages
         
