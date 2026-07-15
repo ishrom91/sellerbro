@@ -898,9 +898,8 @@ async def main() -> None:
     """Main function to run the bot"""
     logger.info("Starting bot...")
     try:
-        # Use async context manager for better resource management
-        async with bot:
-            await dp.start_polling(bot)
+        # Start polling without async context manager
+        await dp.start_polling(bot)
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
@@ -910,5 +909,23 @@ async def main() -> None:
         logger.info("Bot session closed")
 
 
+# Proper shutdown handler
+async def shutdown():
+    logger.info("Shutting down bot...")
+    await bot.session.close()
+    if hasattr(dp, 'storage'):
+        await dp.storage.close()
+
+
+def main_sync():
+    try:
+        asyncio.run(dp.start_polling(bot))
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped by user")
+    finally:
+        asyncio.run(shutdown())
+
+
 if __name__ == "__main__":
+    # Use the simpler approach without context manager
     asyncio.run(main())
