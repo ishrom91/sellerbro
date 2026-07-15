@@ -1,1 +1,1 @@
-web: python bot.py
+worker: python check_deps.py && python bot.py
